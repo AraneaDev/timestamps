@@ -715,7 +715,7 @@ is "state dir: and it really is back on disk, not just remembered" "1" \
 # Without the `d*)` arm this chmods the symlink's target and returns 0.
 fresh
 chmod 755 "$(ct_state_dir)"
-# shellcheck disable=SC2317  # invoked indirectly, from inside ct_state_ready
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, from inside ct_state_ready
 ls() { printf 'lrwxrwxrwx 1 %s %s 12 Jan 1 00:00 x -> y\n' "$(id -un)" "$(id -gn)"; }
 refutes "state dir: a swapped-in symlink is refused at the mode check" ct_state_ready
 unset -f ls
@@ -1813,8 +1813,7 @@ invalid() {
 is "invalid: ct_is_onoff names the flag, the rule and the value" \
    "--enabled must be 'on' or 'off', got 'maybe'." \
    "$(invalid --enabled=maybe)"
-out="$(CLAUDE_TIMESTAMP_CONFIG="$WORK/invalid.conf" \
-       bash "$SCRIPTS/setup.sh" --enabled=maybe >/dev/null 2>&1)" && rc=0 || rc=$?
+invalid --enabled=maybe >/dev/null 2>&1 && rc=0 || rc=$?
 is "invalid: and refusing a value exits 2" "2" "$rc"
 
 # --inject-context is the one flag spelled true/false rather than on/off, so
@@ -2875,7 +2874,7 @@ is "require: and appends nothing" "  a line that was already there" "$CT_CONFIG_
 # default. A predicate reading the wrong string would accept and reject the
 # wrong configs while every message here still looked right.
 CT_REQ_SPY_SEEN=""
-# shellcheck disable=SC2317  # _ct_require calls this by name, not from here
+# shellcheck disable=SC2317,SC2329  # _ct_require calls this by name, not from here
 ct_req_spy() { CT_REQ_SPY_SEEN="$1"; [ "$1" = "keep" ]; }
 CT_CONFIG_PROBLEMS=""
 CT_REQ_SPY="keep"
