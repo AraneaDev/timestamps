@@ -11,7 +11,7 @@ The agent hears when a turn runs long, a command is slow, or work resumes after 
 At the end, where the session's time actually went.
 
 [![Release](https://img.shields.io/github/v/release/AraneaDev/timestamps)](https://github.com/AraneaDev/timestamps/releases)
-[![Tool page](https://img.shields.io/badge/tool%20page-aranea.dev-0b7285)](https://aranea.dev/en/tools/timestamps)
+[![Tool page](https://img.shields.io/badge/tool%20page-aranea.dev-0b7285)](https://aranea.dev/tools/timestamps)
 [![CI](https://github.com/AraneaDev/timestamps/actions/workflows/ci.yml/badge.svg)](https://github.com/AraneaDev/timestamps/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/badge/tests-1536%20passing-2b8a3e)](tests/run.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-364fc7)](docs/troubleshooting.md#platform-notes)
