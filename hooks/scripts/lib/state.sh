@@ -1163,7 +1163,7 @@ ct_checks_rows() {
       seen=$(( seen + 1 ))
       if [ "$seen" -gt 20000 ]; then top=""; break; fi
       for i in "${!marks[@]}"; do
-        if [ "$top/$f" -nt "${marks[$i]}" ]; then changed[$i]=$(( ${changed[$i]} + 1 )); fi
+        if [ "$top/$f" -nt "${marks[$i]}" ]; then changed[i]=$(( changed[i] + 1 )); fi
       done
     done < <(git -C "$top" ls-files -co --exclude-standard -z 2>/dev/null)
   fi
@@ -1258,6 +1258,9 @@ ct_raise_limit_var() {
   # "10#": a leading zero would otherwise read as octal.
   lim=$((10#$lim)); cap=$((10#$cap))
   runs=$((10#${runs:-0})); max=$((10#${max:-0})); stopped=$((10#${stopped:-0})); stop=$((10#${stop:-0}))
+  # Dividing before multiplying is the point below: each figure is cut to
+  # whole seconds, then to whole tens of them, before it is scaled back up.
+  # shellcheck disable=SC2017
   if [ "$runs" -gt 0 ] && { [ "$runs" -ge 3 ] || [ "$stopped" -eq 0 ] || [ "$max" -ge "$stop" ]; }; then
     [ $(( lim * 10 )) -lt $(( max * 11 )) ] || return 0
     to=$(( ( (max + 999) / 1000 * 3 + 1 ) / 2 ))
@@ -1269,6 +1272,7 @@ ct_raise_limit_var() {
   else
     return 0
   fi
+  # shellcheck disable=SC2017  # as above: rounded up to ten seconds first
   to=$(( (to + 9) / 10 * 10000 ))
   [ "$to" -le "$cap" ] || to="$cap"
   if [ "$to" -gt "$lim" ]; then

@@ -7601,6 +7601,7 @@ if command -v jq >/dev/null 2>&1; then
   is "publish: gh pr create" "pull request" "$(ev_pub 'gh pr create --fill')"
   is "publish: gh pr merge" "pull request" "$(ev_pub 'gh pr merge 12 --squash')"
   is "publish: the last one on the line" "push" "$(ev_pub 'git commit -m x && git push')"
+  # shellcheck disable=SC2016  # the $( is the command under test, not ours to expand
   is "publish: a commit message with a heredoc" "commit" "$(ev_pub "$(printf 'git commit -m "$(cat <<EOF\nbody\nEOF\n)"')")"
   is "publish: git log is none" "" "$(ev_pub 'git log --grep commit')"
   is "publish: git commit-tree is none" "" "$(ev_pub 'git commit-tree abc')"

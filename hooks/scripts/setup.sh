@@ -957,16 +957,16 @@ turns_report() {
 }
 
 # The median and last columns of one row of the commands report, into
-# _CT_MED and _CT_LAST. A command that has only ever been stopped at its
+# _CT_CMD_MEDIAN and _CT_CMD_NEWEST. A command that has only ever been stopped at its
 # limit has no finished run to time, and a dash says so where 0s would not.
 #   $1 finished runs   $2 median ms   $3 last ms
 commands_times() {
   if [ "${1:-0}" -gt 0 ] 2>/dev/null; then
-    _CT_MED="$(ct_format_duration $(( ${2:-0} / 1000 )))"
-    _CT_LAST="$(ct_format_duration $(( ${3:-0} / 1000 )))"
+    _CT_CMD_MEDIAN="$(ct_format_duration $(( ${2:-0} / 1000 )))"
+    _CT_CMD_NEWEST="$(ct_format_duration $(( ${3:-0} / 1000 )))"
   else
-    _CT_MED="-"
-    _CT_LAST="-"
+    _CT_CMD_MEDIAN="-"
+    _CT_CMD_NEWEST="-"
   fi
 }
 
@@ -1032,7 +1032,7 @@ commands_report() {
     while IFS=$'\t' read -r proj key runs med last failed stopped _; do
       commands_times "$runs" "$med" "$last"
       printf "  %-${pw}s  %-${kw}s %5s %9s %9s %7s %8s\n" "$proj" "$key" "$runs" \
-        "$_CT_MED" "$_CT_LAST" "$failed" "$stopped"
+        "$_CT_CMD_MEDIAN" "$_CT_CMD_NEWEST" "$failed" "$stopped"
     done <<< "$rows"
   else
     while IFS=$'\t' read -r key _; do
@@ -1042,7 +1042,7 @@ commands_report() {
     while IFS=$'\t' read -r key runs med last failed stopped _; do
       commands_times "$runs" "$med" "$last"
       printf "  %-${kw}s %5s %9s %9s %7s %8s\n" "$key" "$runs" \
-        "$_CT_MED" "$_CT_LAST" "$failed" "$stopped"
+        "$_CT_CMD_MEDIAN" "$_CT_CMD_NEWEST" "$failed" "$stopped"
     done <<< "$rows"
   fi
   return 0
