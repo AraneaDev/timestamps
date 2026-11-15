@@ -7274,6 +7274,29 @@ is "usual: stopped runs do not count toward three" "" "$(ct_command_usual "$WORK
 cp "$WORK/lim.tsv" "$WORK/lim-pruned.tsv"
 ct_prune_commands "$WORK/lim-pruned.tsv" "$lm_now"
 is "prune: stopped lines are kept, garbage is dropped" "7" "$(wc -l < "$WORK/lim-pruned.tsv" | tr -d ' ')"
+is "note: stopped runs are counted beside the usual" \
+  "Usually slow in this project: t ~1m50s (5 runs, 2 more stopped at the 5m00s limit)." "$(ct_slow_commands_note "$WORK/lim.tsv" q 60)"
+is "note: a command only ever stopped is named" \
+  "Usually slow in this project: u stopped at its limit 3 times (limit 2m00s)." "$(ct_slow_commands_note "$WORK/limonly.tsv" q 60)"
+printf '%s\tq\tv\t120010\tlimit\n' "$lm_now" > "$WORK/limone.tsv"
+is "note: one stopped run alone says nothing" "" "$(ct_slow_commands_note "$WORK/limone.tsv" q 60)"
+is "note: stopped-only still obeys a zero threshold" "" "$(ct_slow_commands_note "$WORK/limonly.tsv" q 0)"
+# Usually quick, but stopped twice at a limit shorter than it needs: named,
+# though its usual time is under the threshold.
+{
+  for _ in 1 2 3; do printf '%s\tq\tw\t50000\tok\n' "$lm_now"; done
+  for _ in 1 2; do printf '%s\tq\tw\t30010\tlimit\n' "$lm_now"; done
+} > "$WORK/limquick.tsv"
+is "note: a quick command stopped twice is named with both" \
+  "Usually slow in this project: w ~50s (3 runs, 2 more stopped at the 30s limit)." "$(ct_slow_commands_note "$WORK/limquick.tsv" q 60)"
+# Three at most, the usually slow before the merely stopped.
+cat "$WORK/lim.tsv" "$WORK/limquick.tsv" > "$WORK/limmix.tsv"
+for lm_key in a b; do
+  for _ in 1 2 3; do printf '%s\tq\t%s\t400000\tok\n' "$lm_now" "$lm_key"; done
+done >> "$WORK/limmix.tsv"
+is "note: the usually slow come before the stopped, three in all" \
+  "Usually slow in this project: a ~6m40s (3 runs), b ~6m40s (3 runs), t ~1m50s (5 runs, 2 more stopped at the 5m00s limit)." \
+  "$(ct_slow_commands_note "$WORK/limmix.tsv" q 60 | sed 's/b ~6m40s (3 runs), a ~6m40s (3 runs)/a ~6m40s (3 runs), b ~6m40s (3 runs)/')"
 
 # The memory before this format could not be corrected, so it is not read,
 # and its default file is cleared away. A path the user chose is theirs.
@@ -7451,6 +7474,17 @@ if command -v jq >/dev/null 2>&1; then
   is "report json: one command" "1" "$(printf '%s' "$js" | jq '.commands | length')"
   is "report json: median in ms" "240000" "$(printf '%s' "$js" | jq '.commands[0].median_ms')"
   is "report json: failures counted" "3" "$(bash "$SCRIPTS/setup.sh" --commands --project=other --json | jq '.commands[0].failed')"
+  for _ in 1 2; do printf '%s\tcr-proj\tbash tests/run.sh\t300020\tlimit\n' "$(date +%s)" >> "$CLAUDE_TIMESTAMP_COMMANDS"; done
+  for _ in 1 2; do printf '%s\tcr-proj\tnpx playwright test\t120010\tlimit\n' "$(date +%s)" >> "$CLAUDE_TIMESTAMP_COMMANDS"; done
+  out="$(cd "$WORK/cr-proj" && bash "$SCRIPTS/setup.sh" --commands 2>&1)"
+  is "report: the table has a stopped column" "1" "$(printf '%s\n' "$out" | grep -c 'failed *stopped$')"
+  is "report: stopped runs are counted on the row" "1" "$(printf '%s\n' "$out" | grep -c 'bash tests/run.sh  *3  *4m00s  *4m00s  *0  *2$')"
+  is "report: a command only ever stopped has no times" "1" "$(printf '%s\n' "$out" | grep -c 'npx playwright test  *0  *-  *-  *0  *2$')"
+  is "report: all projects has the column too" "1" "$(bash "$SCRIPTS/setup.sh" --commands --project=all 2>&1 | grep -c 'failed *stopped$')"
+  js="$(cd "$WORK/cr-proj" && bash "$SCRIPTS/setup.sh" --commands --json)"
+  is "report json: stopped and limit_ms" "2 300020" "$(printf '%s' "$js" | jq -r '.commands[] | select(.key == "bash tests/run.sh") | "\(.stopped) \(.limit_ms)"')"
+  is "report json: failed is still a number" "0" "$(printf '%s' "$js" | jq -r '.commands[] | select(.key == "bash tests/run.sh") | .failed')"
+  is "report json: all projects" "2" "$(bash "$SCRIPTS/setup.sh" --commands --project=all --json | jq -r '.commands[] | select(.key == "npx playwright test") | .stopped')"
   out="$(bash "$SCRIPTS/setup.sh" --commands --tool-timing=on 2>&1)"; rc=$?
   is "report: refuses a setting flag" "2" "$rc"
   out="$(bash "$SCRIPTS/setup.sh" --commands --since=7d 2>&1)"; rc=$?
@@ -7459,7 +7493,8 @@ if command -v jq >/dev/null 2>&1; then
   contains "report: says when memory is off" "COMMAND_MEMORY is off" "$(bash "$SCRIPTS/setup.sh" --commands 2>&1)"
 else
   for cr_label in "this project" "median" "not other" "project flag" "all" "all both" \
-                  "json one" "json median" "json failed" "refuses setting" "refuses since" "off"; do
+                  "json one" "json median" "json failed" "stopped column" "stopped row" "stopped only" "stopped all" \
+                  "json stopped" "json failed number" "json all" "refuses setting" "refuses since" "off"; do
     skip "report: $cr_label" "jq is not installed"
   done
 fi

@@ -1058,26 +1058,59 @@ ct_command_stats() {
 }
 
 # The sentence telling the model which commands are usually slow in this
-# project, or nothing: keys with at least three runs and a median of at least
-# the slow-tool threshold, slowest first, at most three.
+# project, or nothing. At most three, in two kinds:
+#
+#   usually slow   three finished runs and a median of at least the slow-tool
+#                  threshold, slowest first
+#   stopped        stopped at its limit at least twice, whatever its usual
+#                  time: the limit was too short for it, and a third run as
+#                  it was will be stopped too
+#
+# The usually slow come first. A command with stopped runs says how many and
+# at what limit; one that has too few finished runs for a usual time says
+# only that.
 #   $1 the memory file   $2 project   $3 threshold in seconds
 ct_slow_commands_note() {
-  local file="${1:-}" project="${2:-}" after="${3:-}" key runs med list="" count=0
+  local file="${1:-}" project="${2:-}" after="${3:-}" key runs med stopped lim
+  local entry slow="" also="" nslow=0 nalso=0 list
+  # A variable, because bash 3.2 does not expand $'\n' inside "${x:+...}".
+  local nl=$'\n'
   case "$after" in ''|*[!0-9]*) return 0 ;; esac
   after=$((10#$after))
   [ "$after" -gt 0 ] || return 0
   if [ -z "$project" ] || [ "$project" = "-" ]; then
     return 0
   fi
-  while IFS=$'\t' read -r key runs med _; do
+  while IFS=$'\t' read -r key runs med _ _ stopped lim; do
     case "$runs" in ''|*[!0-9]*) continue ;; esac
     case "$med" in ''|*[!0-9]*) continue ;; esac
-    [ "$runs" -ge 3 ] || continue
-    [ $(( med / 1000 )) -ge "$after" ] || continue
-    list="${list:+$list, }$key ~$(ct_format_duration $(( med / 1000 ))) ($runs runs)"
-    count=$(( count + 1 ))
-    [ "$count" -ge 3 ] && break
+    case "$stopped" in ''|*[!0-9]*) stopped=0 ;; esac
+    case "$lim" in ''|*[!0-9]*) lim=0 ;; esac
+    if [ "$runs" -ge 3 ]; then
+      entry="$key ~$(ct_format_duration $(( med / 1000 )))"
+      if [ "$stopped" -gt 0 ]; then
+        entry="$entry ($runs runs, $stopped more stopped at the $(ct_format_duration $(( lim / 1000 ))) limit)"
+      else
+        entry="$entry ($runs runs)"
+      fi
+    else
+      entry="$key stopped at its limit $stopped times (limit $(ct_format_duration $(( lim / 1000 ))))"
+    fi
+    if [ "$runs" -ge 3 ] && [ $(( med / 1000 )) -ge "$after" ]; then
+      [ "$nslow" -lt 3 ] || continue
+      slow="${slow:+$slow, }$entry"; nslow=$(( nslow + 1 ))
+    elif [ "$stopped" -ge 2 ]; then
+      [ "$nalso" -lt 3 ] || continue
+      also="${also:+$also$nl}$entry"; nalso=$(( nalso + 1 ))
+    fi
   done < <(ct_command_stats "$file" "$project")
+  list="$slow"
+  if [ -n "$also" ]; then
+    while IFS= read -r entry; do
+      [ "$nslow" -lt 3 ] || break
+      list="${list:+$list, }$entry"; nslow=$(( nslow + 1 ))
+    done <<< "$also"
+  fi
   if [ -n "$list" ]; then
     printf 'Usually slow in this project: %s.' "$list"
   fi

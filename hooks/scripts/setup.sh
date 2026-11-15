@@ -932,6 +932,20 @@ turns_report() {
   return 0
 }
 
+# The median and last columns of one row of the commands report, into
+# _CT_MED and _CT_LAST. A command that has only ever been stopped at its
+# limit has no finished run to time, and a dash says so where 0s would not.
+#   $1 finished runs   $2 median ms   $3 last ms
+commands_times() {
+  if [ "${1:-0}" -gt 0 ] 2>/dev/null; then
+    _CT_MED="$(ct_format_duration $(( ${2:-0} / 1000 )))"
+    _CT_LAST="$(ct_format_duration $(( ${3:-0} / 1000 )))"
+  else
+    _CT_MED="-"
+    _CT_LAST="-"
+  fi
+}
+
 # What the duration memory knows: per command, how many runs, the median, the
 # last and the failures, for this directory's project unless --project names
 # another or "all".
@@ -965,8 +979,8 @@ commands_report() {
       {project: (if $mode == "all" then null else $project end), all: ($mode == "all"),
        commands: [split("\n")[] | select(length > 0) | split("\t")
          | if $mode == "all"
-           then {project: .[0], key: .[1], runs: (.[2] | tonumber), median_ms: (.[3] | tonumber), last_ms: (.[4] | tonumber), failed: (.[5] | tonumber)}
-           else {key: .[0], runs: (.[1] | tonumber), median_ms: (.[2] | tonumber), last_ms: (.[3] | tonumber), failed: (.[4] | tonumber)} end]}'
+           then {project: .[0], key: .[1], runs: (.[2] | tonumber), median_ms: (.[3] | tonumber), last_ms: (.[4] | tonumber), failed: (.[5] | tonumber), stopped: (.[6] | tonumber), limit_ms: (.[7] | tonumber)}
+           else {key: .[0], runs: (.[1] | tonumber), median_ms: (.[2] | tonumber), last_ms: (.[3] | tonumber), failed: (.[4] | tonumber), stopped: (.[5] | tonumber), limit_ms: (.[6] | tonumber)} end]}'
     return $?
   fi
   if [ "$mode" = "all" ]; then
@@ -990,19 +1004,21 @@ commands_report() {
       [ "${#proj}" -gt "$pw" ] && pw="${#proj}"
       [ "${#key}" -gt "$kw" ] && kw="${#key}"
     done <<< "$rows"
-    printf "  %-${pw}s  %-${kw}s %5s %9s %9s %7s\n" "project" "command" "runs" "median" "last" "failed"
-    while IFS=$'\t' read -r proj key runs med last failed; do
-      printf "  %-${pw}s  %-${kw}s %5s %9s %9s %7s\n" "$proj" "$key" "$runs" \
-        "$(ct_format_duration $(( med / 1000 )))" "$(ct_format_duration $(( last / 1000 )))" "$failed"
+    printf "  %-${pw}s  %-${kw}s %5s %9s %9s %7s %8s\n" "project" "command" "runs" "median" "last" "failed" "stopped"
+    while IFS=$'\t' read -r proj key runs med last failed stopped _; do
+      commands_times "$runs" "$med" "$last"
+      printf "  %-${pw}s  %-${kw}s %5s %9s %9s %7s %8s\n" "$proj" "$key" "$runs" \
+        "$_CT_MED" "$_CT_LAST" "$failed" "$stopped"
     done <<< "$rows"
   else
     while IFS=$'\t' read -r key _; do
       [ "${#key}" -gt "$kw" ] && kw="${#key}"
     done <<< "$rows"
-    printf "  %-${kw}s %5s %9s %9s %7s\n" "command" "runs" "median" "last" "failed"
-    while IFS=$'\t' read -r key runs med last failed; do
-      printf "  %-${kw}s %5s %9s %9s %7s\n" "$key" "$runs" \
-        "$(ct_format_duration $(( med / 1000 )))" "$(ct_format_duration $(( last / 1000 )))" "$failed"
+    printf "  %-${kw}s %5s %9s %9s %7s %8s\n" "command" "runs" "median" "last" "failed" "stopped"
+    while IFS=$'\t' read -r key runs med last failed stopped _; do
+      commands_times "$runs" "$med" "$last"
+      printf "  %-${kw}s %5s %9s %9s %7s %8s\n" "$key" "$runs" \
+        "$_CT_MED" "$_CT_LAST" "$failed" "$stopped"
     done <<< "$rows"
   fi
   return 0
