@@ -103,8 +103,12 @@ function tabRow(view: PaneView, columns: number): Row {
   return { key: 'tabs', segments: [...(width(full) <= columns ? full : clip(names(true), columns)), ...keys] }
 }
 
-function keysRow(view: PaneView, open: Target | undefined, columns: number): Row {
+function keysRow(view: PaneView, open: Target | undefined, columns: number, above = 0, below = 0): Row {
   const left: Segment[] = [button('down', '↓', 'j'), { text: '  ' }, button('up', '↑', 'k')]
+  // What the room does not show, either side of what it does: j and k reach it.
+  if (above > 0 || below > 0) {
+    left.push({ text: `   ${[above > 0 ? `↑ ${above} more` : '', below > 0 ? `↓ ${below} more` : ''].filter(t => t !== '').join('  ')}`, dim: true })
+  }
   const right: Segment[] = []
   if (open !== undefined) right.push(button('open', 'open turn', 'o'), { text: '   ' })
   if (view.tab === 'turns') right.push(button('order', view.isByTime ? 'as they happened' : 'longest first', 's'), { text: '   ' })
@@ -232,14 +236,25 @@ function checksSummary(checks: readonly PaneCheck[]): string {
 
 const KIND_HUE: Record<string, string | undefined> = { stopped: WARN, checks: WARN, raised: ACCENT, slow: undefined }
 
-function overview(data: PaneData, view: PaneView, w: number, clock: Clock): Body {
+/** The headline figures as one line, for a room too short to spend four rows on a frame. */
+function figuresLine(all: Tile[], columns: number): Row {
+  const segments: Segment[] = [{ text: ' ' }]
+  all.forEach((t, i) => {
+    if (i > 0) segments.push({ text: ' · ', dim: true })
+    segments.push({ text: t.figure, color: t.color, bold: true }, { text: ` ${t.label}` })
+  })
+  return { key: 'figures', segments: clip(segments, columns) }
+}
+
+function overview(data: PaneData, view: PaneView, w: number, clock: Clock, isCompact: boolean): Body {
   const body: Body = { rows: [], targets: [] }
   const pick = (target: Target | null) => body.targets.push(target) - 1 === view.marker
   const working = workingSeconds(data)
   const stopped = data.calls.filter(c => c.outcome === 'limit').length
   const failed = data.calls.filter(c => c.outcome === 'fail').length
+  const headline = (all: Tile[]): Row[] => (isCompact ? [figuresLine(all, w)] : tiles(all, w))
   body.rows.push(
-    ...tiles(
+    ...headline(
       [
         { figure: fmt(data.elapsed), label: 'session', color: 'remember' },
         { figure: String(data.turns.length), label: 'turns', color: TURN_HUE },
@@ -249,7 +264,6 @@ function overview(data: PaneData, view: PaneView, w: number, clock: Clock): Body
         { figure: String(stopped), label: 'stopped', color: stopped > 0 ? WARN : OK },
         { figure: String(failed), label: 'failed', color: failed > 0 ? BAD : OK },
       ],
-      w,
     ),
     blank('gap-tiles'),
   )
@@ -693,10 +707,10 @@ function history(data: PaneData, view: PaneView, w: number, room: number): Body 
 
 // ------------------------------------------------------------------ pane --
 
-function bodyOf(data: PaneData, view: PaneView, w: number, room: number, clock: Clock): Body {
+function bodyOf(data: PaneData, view: PaneView, w: number, room: number, clock: Clock, isCompact: boolean): Body {
   switch (view.tab) {
     case 'overview':
-      return overview(data, view, w, clock)
+      return overview(data, view, w, clock, isCompact)
     case 'turns':
       return turns(data, view, w, room, clock)
     case 'commands':
@@ -715,30 +729,59 @@ export function markerCount(data: PaneData | null, view: PaneView, columns: numb
   return paneLayout(data, view, columns, height, clock).count
 }
 
+// Below this many rows the pane is in the classic layout's seat above the
+// prompt, or in a very short dock: every row has to earn its place.
+const COMPACT_BELOW = 26
+
 /**
- * The whole pane: the title and the tabs, a rule, the open tab's body with a
- * cell of margin either side, and the keys on the last row of the room. A
- * marker past the end of its list stands on the last row.
+ * The whole pane, in exactly the room it has: the title and the tabs, the
+ * open tab's body with a cell of margin either side, and the keys on the
+ * last row.
+ *
+ * A room of fewer than COMPACT_BELOW rows gets the compact form: the title
+ * and the tabs with nothing between them, no blank rows, and the headline
+ * figures on one line rather than in a frame.
+ *
+ * A body taller than its room is shown through a window, never left for the
+ * surface to scroll: the keys would scroll away with it. The window starts
+ * at the top and moves only as far as it takes to keep the marked row in
+ * sight; past the last row the marker can stand on, j goes on moving the
+ * window to the end of the body. So every row of
+ * every tab is reachable with j and k alone, and `count` is how many steps
+ * there are: the rows the marker can stand on, then the steps past them.
  */
 export function paneLayout(data: PaneData | null, view: PaneView, columns: number, height: number, clock: Clock): Layout {
   const inner = Math.max(1, columns - 2)
   const pad = (row: Row): Row => ({ key: row.key, segments: [{ text: ' ' }, ...clip(row.segments, inner)] })
-  const head: Row[] = [titleRow(data, inner), blank('gap-title'), tabRow(view, inner), { key: 'tabs-rule', segments: [{ text: '─'.repeat(inner), dim: true }] }, blank('gap-tabs')]
-  const room = Math.max(6, height - head.length - 2)
-  let body: Body
-  if (data === null) body = { rows: [dimText('loading', ' Reading this session…')], targets: [] }
-  else {
-    body = bodyOf(data, view, inner, room, clock)
-    // Past the end of a list that has since shrunk: the last row is the marked one.
-    if (body.targets.length > 0 && view.marker >= body.targets.length) body = bodyOf(data, { ...view, marker: body.targets.length - 1 }, inner, room, clock)
+  const isCompact = height < COMPACT_BELOW
+  const head: Row[] = isCompact
+    ? [titleRow(data, inner), tabRow(view, inner)]
+    : [titleRow(data, inner), blank('gap-title'), tabRow(view, inner), { key: 'tabs-rule', segments: [{ text: '─'.repeat(inner), dim: true }] }, blank('gap-tabs')]
+  const room = Math.max(3, height - head.length - 1 - (isCompact ? 0 : 1))
+  let body: Body = { rows: [dimText('loading', ' Reading this session…')], targets: [] }
+  let at = 0
+  if (data !== null) {
+    body = bodyOf(data, view, inner, room, clock, isCompact)
+    // Past the last row the marker can stand on: it stays there, and the steps beyond move the window.
+    at = Math.min(view.marker, Math.max(0, body.targets.length - 1))
+    if (at !== view.marker) body = bodyOf(data, { ...view, marker: at }, inner, room, clock, isCompact)
   }
-  const marker = Math.min(view.marker, Math.max(0, body.targets.length - 1))
-  const open = body.targets[marker] ?? undefined
-  const rows = [...head, ...body.rows].map(pad)
-  // The keys sit on the room's last row; a body taller than the room pushes them down with it.
+  const all = isCompact ? body.rows.filter(r => !r.key.startsWith('gap-')) : body.rows
+  const hasTargets = body.targets.length > 0
+  const overflow = Math.max(0, all.length - room)
+  // A marker left past the end of a page that now fits is simply on its last row.
+  const beyond = overflow === 0 ? 0 : Math.max(0, view.marker - (hasTargets ? body.targets.length - 1 : 0))
+  const markedRow = all.findIndex(r => r.segments[0]?.text === '› ')
+  const base = markedRow < 0 ? 0 : Math.max(0, Math.min(overflow, markedRow - room + 1))
+  const start = Math.min(overflow, base + beyond)
+  const isLast = !hasTargets || at === body.targets.length - 1
+  // On the last row the steps past it are known exactly; before it, one more than the rows is enough to get there.
+  const count = overflow === 0 ? body.targets.length : isLast ? (hasTargets ? body.targets.length : 1) + (overflow - base) : body.targets.length + 1
+  const open = beyond === 0 ? (body.targets[at] ?? undefined) : undefined
+  const rows = [...head, ...all.slice(start, start + room)].map(pad)
   for (let i = rows.length; i < height - 1; i++) rows.push(blank(`fill-${i}`))
-  rows.push(pad(keysRow(view, open, inner)))
-  return { rows, count: body.targets.length, open }
+  rows.push(pad(keysRow(view, open, inner, start, Math.max(0, all.length - start - room))))
+  return { rows, count, open }
 }
 
 /** Where a turn stands in the Turns tab's list, for opening it from the overview. */

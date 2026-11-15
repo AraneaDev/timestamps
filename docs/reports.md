@@ -101,6 +101,16 @@ that tab. The pane is read again when a turn ends, and every few seconds while
 one runs. It is drawn on the terminal's own background, and in a narrow
 terminal the list and its detail stack instead of sitting side by side.
 
+In the fullscreen layout the pane is docked beside the conversation. In the
+classic layout Claude Code seats it above the prompt, in the few rows that are
+free there, and the pane takes its compact form: the title and the tabs with
+nothing between them, no blank rows, and the headline figures on one line.
+Either way the pane is exactly as tall as its room, with the keys on its last
+row. A page longer than the room is shown through a window that `j` and `k`
+move: first through the rows the marker can stand on, then on to the end of
+the page, and the keys row says how many rows are out of sight above and
+below.
+
 It draws what the hooks recorded and records nothing itself: one run of
 `setup.sh --pane`, which prints everything above as JSON and can be run by
 hand. The slow calls and the notes come from two per-session lists the hooks

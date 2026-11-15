@@ -204,3 +204,77 @@ test('the clock is in the configured zone, with seconds when asked', () => {
   expect(/^\d\d:\d\d$/.test(clockOf('Not/AZone')(1_700_000_000))).toBe(true)
   expect(/^\d\d:\d\d$/.test(clockOf(null)(1_700_000_000))).toBe(true)
 })
+
+test('compact: a short room gets the title, the tabs, the body and the keys, with no blank rows', () => {
+  const layout = paneLayout(data, at('overview'), 198, 11, clock)
+  const drawn = lines(layout)
+  expect(drawn.length).toBe(11)
+  expect(said(drawn[0] ?? '')).toBe(' timestamps app 50m00s · turn 3 running 3m20s live r: reload')
+  expect(drawn[1]).toBe('  Overview    Turns    Commands    Checks    Told Claude    History')
+  expect(drawn[2]).toBe('  50m00s session · 3 turns · 35m00s you waited · 10m00s away · 7 slow calls · 1 stopped · 1 failed')
+  expect(layout.rows[10]?.key).toBe('keys')
+  expect(drawn.slice(2, 10).some(l => l === '')).toBe(false)
+  expect(drawn.some(l => l.includes('┌'))).toBe(false)
+})
+
+test('compact: j walks the rows, then goes on to the end of the page, and the keys say what is out of sight', () => {
+  const seen = new Set<string>()
+  const first = paneLayout(data, at('overview', 0), 198, 11, clock)
+  expect(rowOf(lines(first), 'j: ↓').includes('more')).toBe(true)
+  // It opens on the top of the page: the figures are the first thing in the room.
+  expect(lines(first)[2]?.startsWith('  50m00s session')).toBe(true)
+  expect(/↑ \d+ more/.test(rowOf(lines(first), 'j: ↓'))).toBe(false)
+  let marker = 0
+  let count = first.count
+  let last = lines(first)
+  // As the hooks do it: a step is allowed while it stays under the count of the last drawing.
+  for (let guard = 0; guard < 200 && marker < count; guard++) {
+    const layout = paneLayout(data, at('overview', marker), 198, 11, clock)
+    last = lines(layout)
+    expect(last.length).toBe(11)
+    for (const l of last) seen.add(l)
+    count = layout.count
+    marker += 1
+  }
+  for (const title of ['Where the time went', 'Over their usual', 'Longest turns', 'Checks', 'Told Claude']) {
+    expect([title, [...seen].some(l => l.includes(title))]).toEqual([title, true])
+  }
+  // The end of the page is the last note, and nothing is left below it.
+  expect(last.some(l => l.includes('22:25  slow'))).toBe(true)
+  expect(/↓ \d+ more/.test(rowOf(last, 'j: ↓'))).toBe(false)
+  expect(/↑ \d+ more/.test(rowOf(last, 'j: ↓'))).toBe(true)
+})
+
+test('compact: past the last row that opens a turn, o opens nothing', () => {
+  const layout = paneLayout(data, at('overview', 6), 198, 11, clock)
+  expect(layout.open).toBe(undefined)
+  expect(rowOf(lines(layout), 'j: ↓').includes('o: open turn')).toBe(false)
+})
+
+test('compact: every tab fits its room at every width, and a tab without rows to mark still scrolls', () => {
+  for (const tab of TABS) {
+    for (const [columns, height] of [[198, 11], [80, 9], [40, 8], [120, 25]] as const) {
+      const layout = paneLayout(data, at(tab.id, 0), columns, height, clock)
+      expect([tab.id, columns, layout.rows.length]).toEqual([tab.id, columns, height])
+      expect([tab.id, layout.rows[height - 1]?.key]).toEqual([tab.id, 'keys'])
+    }
+  }
+  const none = parsePane(JSON.stringify({ ...REPORT, session: { ...REPORT.session, checks: [] } }))!
+  const short = paneLayout(none, at('checks', 0), 40, 8, clock)
+  expect(short.count > 1).toBe(true)
+  expect(lines(paneLayout(none, at('checks', short.count - 1), 40, 8, clock)).some(l => l.includes('whoever edited them.'))).toBe(true)
+})
+
+test('a full-height pane that is still too short for its page scrolls the same way', () => {
+  const layout = paneLayout(data, at('overview', 0), 100, 30, clock)
+  const drawn = lines(layout)
+  expect(drawn.length).toBe(30)
+  expect(drawn[5]?.includes('┌')).toBe(true)
+  expect(/↓ \d+ more/.test(rowOf(drawn, 'j: ↓'))).toBe(true)
+  expect(layout.count > 4).toBe(true)
+})
+
+test('a page that fits has exactly the rows the marker can stand on', () => {
+  expect(paneLayout(data, at('overview', 0), 100, 60, clock).count).toBe(4)
+  expect(rowOf(draw(at('overview')), 'j: ↓').includes('more')).toBe(false)
+})
