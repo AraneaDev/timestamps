@@ -13,7 +13,7 @@ At the end, where the session's time actually went.
 [![Release](https://img.shields.io/github/v/release/AraneaDev/timestamps)](https://github.com/AraneaDev/timestamps/releases)
 [![Tool page](https://img.shields.io/badge/tool%20page-aranea.dev-0b7285)](https://aranea.dev/tools/timestamps)
 [![CI](https://github.com/AraneaDev/timestamps/actions/workflows/ci.yml/badge.svg)](https://github.com/AraneaDev/timestamps/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-1732%20passing-2b8a3e)](tests/run.sh)
+[![Tests](https://img.shields.io/badge/tests-1765%20passing-2b8a3e)](tests/run.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-364fc7)](docs/troubleshooting.md#platform-notes)
 [![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -64,10 +64,17 @@ a quick turn. Claude Code only, and display only: Claude is told nothing more.
 ### What the agent is told
 
 The agent receives the time each prompt was sent, a short note when a turn
-runs long or a tool call is slow, how long ago a project or conversation was
-last active, and its own timeline after a compaction. A bundled skill tells it
-what each note is a reason to do, and lets it answer "how long has this
-session run?" from measurement. See [What Claude is told](docs/agent-notes.md).
+runs long, a tool call is slow or a command was stopped at its time limit, how
+long ago a project or conversation was last active, and its own timeline after
+a compaction. After a commit, a push or a pull request it is told which of the
+checks it ran have failed or have had files change since. A bundled skill
+tells it what each note is a reason to do, and lets it answer "how long has
+this session run?" from measurement. See [What Claude is told](docs/agent-notes.md).
+
+```text
+That Bash call was stopped at its 2m00s limit (finishes in ~2m16s when it does).
+Before this commit: bash tests/run.sh passed 48m12s ago, 9 files changed since.
+```
 
 <p align="center">
   <img src="assets/skill.webp" alt="Claude loading the time-awareness skill and answering how long the session has run from the measured report" width="760">
@@ -81,11 +88,45 @@ named, so the agent runs them in the background and waits for CI as long as CI
 actually takes.
 
 ```text
-Usually slow in this project: gh run watch ~7m40s (5 runs), bash tests/run.sh ~4m02s (12 runs).
+Usually slow in this project: gh run watch ~7m40s (5 runs), bash tests/run.sh ~2m16s (3 runs, 2 more stopped at the 2m00s limit).
 That Bash call took 6m10s (usually 4m02s).
 ```
 
+The memory only keeps what it can vouch for. A call is remembered when one
+command in it accounts for the time: `cd app && timeout 300 npm test | tail`
+counts as `npm test`, while a chain of two commands, a loop or a script is
+left out rather than filed under the wrong name. A run stopped at its limit is
+counted apart, since it lasted as long as the limit and not as long as the
+command.
+
+### What it does about it
+
+A note sent before a command arrives with its result, too late to stop it
+being cut off. So where the memory shows a call's time limit is too short, the
+plugin raises that limit before the call runs, and tells the agent it did.
+It only ever raises a limit, never touches the command, and never approves a
+call for you. `RAISE_LIMIT=off` switches it off.
+
+```text
+Timestamps raised this call's limit from 2m00s to 3m30s: bash tests/run.sh has taken up to 2m16s here.
+```
+
 ### Where your time went
+
+In Claude Code, `/timestamps` opens a pane beside the conversation: the
+session at a glance, then turn by turn. It shows which calls took the time,
+which ran well over their usual, which were stopped or failed, how your checks
+stand, and every note the agent was sent. Six tabs, a marker you move with
+`j` and `k`, and it follows the session while it runs. See
+[the pane](docs/reports.md#the-pane).
+
+<p align="center">
+  <img src="assets/pane.webp" alt="The Timestamps pane's Overview tab: the session's headline figures, where the working time went as one bar, a call that ran 2.4 times its usual, the longest turns, the checks, and the note sent to Claude" width="760">
+</p>
+
+<p align="center">
+  <img src="assets/pane-turns.webp" alt="The Turns tab: both turns of the session as bars, and the marked turn's call with its usual time and what no call accounts for" width="760">
+</p>
 
 Finished sessions are logged, and `--stats` adds them up: how long, how much of
 it waiting and how much away, and, when you turn those on, per project and per
@@ -137,19 +178,22 @@ Checked against Claude Code and Codex CLI 0.154.0.
 | Timestamp marker on each message | ✓ | ✗ | Codex has no event for drawing on a message |
 | Idle divider and slow-turn colour | ✓ | ✗ | Drawn by the same marker |
 | Live turn clock in the footer | ✓ | ✗ | Needs a Claude Code build with hooks modules; `LIVE=off` hides it |
-| `/timeline` pane: where the session's time went, turn by turn | ✓ | ✗ | Needs a Claude Code build with hooks modules; `LIVE=off` removes its call detail |
+| `/timestamps` pane: a dashboard of where the session's time went | ✓ | ✗ | Needs a Claude Code build with hooks modules; `LIVE=off` removes its call detail |
 | A slow tool's time, live, beside its usual time | ✓ | ✗ | Same; Codex has no module support |
 | Prompt time told to Claude | ✓ | ✓ | |
 | Turn-length and slow-tool notes | ✓ | ✓ | Codex timings are whole seconds |
 | Resumption note, for a project or a conversation | ✓ | ✓ | |
 | Note after a compaction | ✓ | ✓ | |
 | Command memory and the usually-slow note | ✓ | ✓ | |
+| A call stopped at its time limit told apart from a failed one | ✓ | ✗ | Read from Claude Code's own report of the call |
+| A time limit raised before the call is stopped | ✓ | ✗ | `RAISE_LIMIT`; changes the call's `timeout` and nothing else |
+| Stale and failed checks named after a commit | ✓ | ✓ | `CHECK_NOTE`; counts changed files in a Git work tree |
 | Turn timeline, `--turns` | ✓ | ✓ | |
 | A turn that ends in an API error recorded as `error` | ✓ | ✗ | Codex has no `StopFailure` event |
 | Session summary at exit | ✓ | ✓ | Recorded in the history; `codex exec` does not display it |
 | History and `--stats` | ✓ | ✓ | |
 | `time-awareness` skill | ✓ | ✓ | |
-| `/timestamps:configure` command | ✓ | ✗ | Codex uses the `timestamps` skill or `setup.sh` |
+| `/timestamps:configure` command | ✓ | ✗ | Codex uses the `settings` skill or `setup.sh` |
 
 The **Chat** and **Cowork** tabs of the desktop app are not Claude Code and
 have no hooks, so nothing here reaches them. Cloud sessions on the web read
@@ -163,7 +207,7 @@ or a preset; it takes effect on the next message. Every setting, the marker's
 layout, colours and per-project settings are in
 [Configuration](docs/configuration.md).
 
-In Codex, use the bundled `timestamps` skill or `hooks/scripts/setup.sh` to change settings. The visual message marker remains specific to Claude Code.
+In Codex, use the bundled `settings` skill or `hooks/scripts/setup.sh` to change settings. The visual message marker remains specific to Claude Code.
 
 ## Documentation
 

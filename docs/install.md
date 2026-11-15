@@ -73,7 +73,7 @@ Codex tool timing is measured from `PreToolUse` to `PostToolUse`, because its
 payload does not include Claude Code's `duration_ms`. Those measurements have
 whole-second precision and include the local hook lifecycle.
 
-The `time-awareness` and `timestamps` skills are bundled for Codex. When using
+The `time-awareness` and `settings` skills are bundled for Codex. When using
 the repository directly, Codex also reads the root [AGENTS.md](../AGENTS.md), and
 the CLI can show or change settings with the same validated configuration:
 

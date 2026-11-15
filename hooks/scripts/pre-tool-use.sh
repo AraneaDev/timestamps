@@ -119,8 +119,10 @@ else
 fi
 
 # A fact, like every other note: what was changed and what it was based on.
+raised="Timestamps raised this call's limit from $from to $to: $cmd_key $why."
+ct_told "$session_id" "raised" "$raised"
 jq -cn --argjson input "$tool_input" --argjson limit "$_CT_RAISE" \
-  --arg note "Timestamps raised this call's limit from $from to $to: $cmd_key $why." \
+  --arg note "$raised" \
   '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: ($input + {timeout: $limit}), additionalContext: $note}}'
 
 exit 0

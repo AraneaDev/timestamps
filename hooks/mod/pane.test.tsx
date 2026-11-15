@@ -1,130 +1,153 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
+import { REPORT, REPORT_JSON } from './pane-fixture.ts'
 
-const DIR = '/tmp/claude-timestamp-1000'
 const PANE = {
   plugin: 'timestamps',
   component: 'Pane' as const,
-  requestId: 'timestamps-timeline',
+  requestId: 'timestamps',
   props: {
-    title: 'Timeline',
-    isFocused: false,
-    bodyColumns: 80,
+    title: 'Timestamps',
+    isFocused: true,
+    bodyColumns: 100,
     placement: 'dock' as const,
-    scroll: { offset: 0, bodyRows: 30 },
+    scroll: { offset: 0, bodyRows: 60 },
     view: {},
   },
 }
-// 1_700_000_000 is 22:13 UTC. Two turns: the first with one slow call, far
-// over its usual 40s; the second longer and without any.
-const TURNLOG = ['1\t1700000000\t1700000100\t100\t-\t-\t-\t0\tstop', '2\t1700000200\t1700000500\t300\t-\t-\t-\t0\tstop'].join('\n')
-const CALLS = '1700000080\t71000\tBash\tnpm test\tok\t0'
-const TSV = ['1\tapp\tnpm test\t40000\tok', '2\tapp\tnpm test\t40000\tok', '3\tapp\tnpm test\t40000\tok'].join('\n')
 
-function world(on: On, files: Record<string, string>, env: Record<string, string> = { TMPDIR: '/tmp', UID: '1000', HOME: '/home/u' }) {
-  mock.clock(on, { now: 1_700_000_600_000 })
-  mock.env(on, env)
+// The engine beneath the plugin: one report from bash, and panes that open and close.
+function world(on: On, report: () => { exitCode: number; stdout: string } = () => ({ exitCode: 0, stdout: REPORT_JSON })) {
+  mock.clock(on, { now: 1_700_003_000_000 })
+  mock.env(on, { TMPDIR: '/tmp', UID: '1000', HOME: '/home/u' })
   on('session.id', () => ({ value: 's1' }))
-  on('fs.read', ($, e) => {
-    const text = files[e.path]
-    return text === undefined ? { deny: `ENOENT ${e.path}` } : { value: text }
-  })
+  on('fs.read', ($, e) => ({ deny: `ENOENT ${e.path}` }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.invalidate', () => ({ value: undefined }))
-  on('command.register', () => ({ value: { command: 'timeline' } }))
-  const opened: string[] = []
+  on('command.register', () => ({ value: { command: 'timestamps' } }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  const seen = { runs: [] as { argv: readonly string[]; sid: string | undefined }[], open: [] as Record<string, unknown>[], isOpen: false }
+  on('process.run', ($, e) => {
+    const call = e as { argv: readonly string[]; init?: { env?: Record<string, string> } }
+    seen.runs.push({ argv: call.argv, sid: call.init?.env?.CLAUDE_CODE_SESSION_ID })
+    return { value: { ...report(), stderr: '' } }
+  })
   on('ui.open', ($, e) => {
-    opened.push(String((e as { id?: unknown }).id))
+    seen.open.push(e as Record<string, unknown>)
+    seen.isOpen = true
     return { value: { isPlaced: true } }
   })
-  on('session.start', ($, e) => ({ cwd: e.cwd }))
-  return { opened }
+  on('ui.close', () => {
+    seen.isOpen = false
+    return { value: undefined }
+  })
+  on('ui.panes', () => ({ value: seen.isOpen ? [{ id: 'timestamps' }] : [] }))
+  return seen
 }
 
-const RECORDED = {
-  [`${DIR}/s1.enabled`]: 'on',
-  [`${DIR}/s1.live`]: 'on',
-  [`${DIR}/s1.project`]: 'app',
-  [`${DIR}/s1.cmdmem`]: 'on',
-  [`${DIR}/s1.tz`]: 'UTC',
-  [`${DIR}/s1.closed`]: '',
-  [`${DIR}/s1.turnlog`]: TURNLOG,
-  [`${DIR}/s1.calls`]: CALLS,
-  '/home/u/.claude/claude-timestamp-commands-v2.tsv': TSV,
-}
+type Mounted = { findAll: (q: { type: 'Text' }) => Promise<{ text?: string }[]> }
+const texts = async (ui: Mounted) => (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+const has = async (ui: Mounted, needle: string) => (await texts(ui)).some(t => t.includes(needle))
 
-const texts = async (ui: { findAll: (q: { type: 'Text' }) => Promise<{ text?: string }[]> }) =>
-  (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
-
-test('/timeline opens the pane on what bash recorded', async ($, on) => {
-  const { opened } = world(on, RECORDED)
+test('/timestamps asks bash once, opens the pane on a transparent ground, and closes it again', async ($, on) => {
+  const seen = world(on)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const ran = await $.command.run({ command: 'timeline', args: '' })
-  expect(ran.text?.startsWith('Timeline opened.')).toBe(true)
-  expect(opened).toEqual(['timestamps-timeline'])
+  const opened = await $.command.run({ command: 'timestamps', args: '' })
+  expect(opened.text?.startsWith('Timestamps pane opened.')).toBe(true)
+  expect(seen.runs.length).toBe(1)
+  expect(seen.runs[0]?.argv.slice(-1)).toEqual(['--pane'])
+  expect(seen.runs[0]?.argv[1]?.endsWith('/hooks/scripts/setup.sh')).toBe(true)
+  expect(seen.runs[0]?.sid).toBe('s1')
+  expect(seen.open[0]?.id).toBe('timestamps')
+  // Asked for transparent. The build CI pins predates that argument and drops
+  // it on the way to the engine; a newer one passes it through.
+  expect(['transparent', undefined].includes(seen.open[0]?.backgroundColor as string | undefined)).toBe(true)
+  const closed = await $.command.run({ command: 'timestamps', args: '' })
+  expect([closed.text, seen.isOpen]).toEqual(['Timestamps pane closed.', false])
+})
 
+test('the pane draws the overview, on every surface', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'timestamps', args: '' })
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    const drawn = await texts(ui)
-    expect(drawn.filter(t => /^(\d+ turn|#| +\d)/.test(t))).toEqual([
-      '2 turns · 6m40s working · since 22:13',
-      '#1  22:13  1m40s · 1m11s in 1 listed call',
-      '    1m11s  npm test  ▲ 1.8× usual 40s',
-      '      29s  the rest: thinking, writing, calls under 5s',
-      '#2  22:16  5m00s',
-    ])
+    expect(await has(ui, 'Where the time went')).toBe(true)
+    expect(await has(ui, '2.5× usual 1m07s')).toBe(true)
+    expect(await has(ui, '50m00s · turn 3 running 3m20s')).toBe(true)
     await ui.unmount()
   }
 })
 
-test('the order button puts the longest turn first, and back', async ($, on) => {
-  world(on, RECORDED)
+test('a tab is a press or a digit away, and /timestamps with a name opens on it', async ($, on) => {
+  world(on)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'timeline', args: '' })
+  await $.command.run({ command: 'timestamps', args: 'told' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  const heads = async () => (await texts(ui)).filter(t => t.startsWith('#')).map(t => t.slice(0, 2))
-  expect(await heads()).toEqual(['#1', '#2'])
+  expect(await has(ui, 'newest first')).toBe(true)
+  await ui.press({ key: 'key-history' })
+  expect(await has(ui, 'Past sessions')).toBe(true)
+  await ui.press({ key: 'tab-commands' })
+  expect(await has(ui, 'slowest first')).toBe(true)
+  await ui.unmount()
+  const wrong = await $.command.run({ command: 'timestamps', args: 'nonsense' })
+  expect(wrong.text).toBe('No tab called "nonsense". The tabs are overview, turns, commands, checks, told, history.')
+})
+
+test('j and k move the marker, never past either end, and o opens the marked turn', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'timestamps', args: '' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const markedRow = async () => {
+    const all = await texts(ui)
+    const at = all.findIndex(t => t.startsWith('› '))
+    return at < 0 ? '' : (all[at + 1] ?? '')
+  }
+  expect((await markedRow()).startsWith('bash tools/check-docs.sh')).toBe(true)
+  await ui.press({ key: 'up' })
+  expect((await markedRow()).startsWith('bash tools/check-docs.sh')).toBe(true)
+  await ui.press({ key: 'down' })
+  expect((await markedRow()).startsWith('#2')).toBe(true)
+  for (let i = 0; i < 9; i++) await ui.press({ key: 'down' })
+  expect((await markedRow()).startsWith('#1')).toBe(true)
+  await ui.press({ key: 'up' })
+  // On turn 3 now: o opens it on the Turns tab, marked there.
+  await ui.press({ key: 'open' })
+  expect(await has(ui, '#3 · 23:00 → now')).toBe(true)
   await ui.press({ key: 'order' })
-  expect(await heads()).toEqual(['#2', '#1'])
-  await ui.press({ key: 'order' })
-  expect(await heads()).toEqual(['#1', '#2'])
+  expect(await has(ui, 'longest first')).toBe(true)
   await ui.unmount()
 })
 
-test('/timeline longest opens it longest first', async ($, on) => {
-  world(on, RECORDED)
+test('reload asks bash again and draws what it says now', async ($, on) => {
+  let report = REPORT_JSON
+  const seen = world(on, () => ({ exitCode: 0, stdout: report }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'timeline', args: 'longest' })
+  await $.command.run({ command: 'timestamps', args: 'told' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await texts(ui)).filter(t => t.startsWith('#')).map(t => t.slice(0, 2))).toEqual(['#2', '#1'])
-  await ui.unmount()
-})
-
-test('read again picks up what bash has written since', async ($, on) => {
-  const files: Record<string, string> = { ...RECORDED }
-  world(on, files)
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'timeline', args: '' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  files[`${DIR}/s1.turnlog`] = `${TURNLOG}\n3\t1700000520\t1700000540\t20\t-\t-\t-\t0\tinterrupted`
+  report = JSON.stringify({ ...REPORT, told: [...REPORT.told, { at: 1_700_002_990, kind: 'raised', text: 'Timestamps raised this call\'s limit from 2m00s to 3m30s.' }] })
   await ui.press({ key: 'reload' })
-  expect((await texts(ui)).some(t => t === '#3  22:22  20s · interrupted')).toBe(true)
+  expect(seen.runs.length).toBe(2)
+  expect(await has(ui, 'Timestamps raised this call')).toBe(true)
   await ui.unmount()
 })
 
-test('a session with no state directory says so and opens nothing', async ($, on) => {
-  // No UID in the environment and an id -u that fails: nowhere to look.
-  const { opened } = world(on, {}, { TMPDIR: '/tmp', HOME: '/home/u' })
-  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }))
+test('a report that fails opens nothing and says why', async ($, on) => {
+  const seen = world(on, () => ({ exitCode: 2, stdout: '' }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const ran = await $.command.run({ command: 'timeline', args: '' })
-  expect(ran.text).toBe('Timestamps has recorded nothing for this session yet.')
-  expect(opened).toEqual([])
+  const ran = await $.command.run({ command: 'timestamps', args: '' })
+  expect(ran.text?.startsWith('Timestamps could not read this session.')).toBe(true)
+  expect(seen.open).toEqual([])
 })
 
-test('before /timeline has run, the pane says how to fill it', async ($, on) => {
-  world(on, RECORDED)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await texts(ui)).toEqual(['Run /timeline to read this session.'])
-  await ui.unmount()
+test('an open pane is read again when a turn ends, a closed one is not', async ($, on) => {
+  const seen = world(on)
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ durationMs: 1000 } as never)
+  expect(seen.runs.length).toBe(0)
+  await $.command.run({ command: 'timestamps', args: '' })
+  await $.turn.complete({ durationMs: 1000 } as never)
+  expect(seen.runs.length).toBe(2)
 })

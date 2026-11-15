@@ -221,14 +221,17 @@ if [ -z "$agent_id" ] || [ "$subagent_notes" = "on" ]; then
     fi
   fi
   note="$_CT_NOTE"
+  if [ -n "$note" ]; then
+    if [ -n "$stop_ms" ]; then ct_told "$session_id" "stopped" "$note"; else ct_told "$session_id" "slow" "$note"; fi
+  fi
 fi
-# The timeline pane's detail: one line for each call that took five seconds
+# The pane's detail: one line for each call that took five seconds
 # or more, or was stopped at its limit however short. End time, duration,
 # tool, command key (- for none), outcome, and whether a subagent made it.
 # Only ever the key, as in the command memory, never the command line. The
-# live layer draws it (hooks/mod/timeline.ts), so LIVE=off writes nothing; it
-# does not keep this hook awake by itself, and a session with every
-# tool-facing setting off gets a timeline of turns without calls.
+# live layer draws it (setup.sh --pane hands it to hooks/mod/), so LIVE=off
+# writes nothing; it does not keep this hook awake by itself, and a session
+# with every tool-facing setting off gets a pane of turns without calls.
 #
 # An append of one short line, for the reason the tool log's is one.
 if [ -n "$ms" ] && [ "$background" != "true" ] && { [ "$ms" -ge 5000 ] || [ -n "$stop_ms" ]; }; then
@@ -263,7 +266,10 @@ if [ "$tool_name" = "Bash" ] && [ -n "$ms" ] && [ "$background" != "true" ]; the
        && { [ -z "$agent_id" ] || [ "$subagent_notes" = "on" ]; }; then
       ct_epoch_var
       ct_check_note_var "$session_id" "$cwd" "$publish" "$_CT_NOW" || :
-      [ -n "$_CT_NOTE" ] && note="${note:+$note }$_CT_NOTE"
+      if [ -n "$_CT_NOTE" ]; then
+        note="${note:+$note }$_CT_NOTE"
+        ct_told "$session_id" "checks" "$_CT_NOTE"
+      fi
     fi
   fi
 fi
@@ -276,7 +282,10 @@ if [ -z "$agent_id" ]; then
       # shellcheck disable=SC2153  # _CT_NOW is assigned by ct_epoch_var (lib/state.sh)
       now="$_CT_NOW"
       ct_heartbeat_note_var "$session_id" "$now" "$hb_every" || :
-      [ -n "$_CT_NOTE" ] && note="${note:+$note }$_CT_NOTE"
+      if [ -n "$_CT_NOTE" ]; then
+        note="${note:+$note }$_CT_NOTE"
+        ct_told "$session_id" "turn" "$_CT_NOTE"
+      fi
       ;;
   esac
 fi
