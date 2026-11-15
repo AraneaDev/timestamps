@@ -20,4 +20,4 @@ bash "$(git rev-parse --show-toplevel)/hooks/scripts/setup.sh" --stats
 
 Use the `time-awareness` skill when it is available. `/timestamps:configure` is the
 Claude Code command; in Codex, configure with `setup.sh` or the bundled
-`timestamps` skill.
+`settings` skill.

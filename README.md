@@ -149,7 +149,7 @@ Checked against Claude Code and Codex CLI 0.154.0.
 | Session summary at exit | ✓ | ✓ | Recorded in the history; `codex exec` does not display it |
 | History and `--stats` | ✓ | ✓ | |
 | `time-awareness` skill | ✓ | ✓ | |
-| `/timestamps:configure` command | ✓ | ✗ | Codex uses the `timestamps` skill or `setup.sh` |
+| `/timestamps:configure` command | ✓ | ✗ | Codex uses the `settings` skill or `setup.sh` |
 
 The **Chat** and **Cowork** tabs of the desktop app are not Claude Code and
 have no hooks, so nothing here reaches them. Cloud sessions on the web read
@@ -163,7 +163,7 @@ or a preset; it takes effect on the next message. Every setting, the marker's
 layout, colours and per-project settings are in
 [Configuration](docs/configuration.md).
 
-In Codex, use the bundled `timestamps` skill or `hooks/scripts/setup.sh` to change settings. The visual message marker remains specific to Claude Code.
+In Codex, use the bundled `settings` skill or `hooks/scripts/setup.sh` to change settings. The visual message marker remains specific to Claude Code.
 
 ## Documentation
 

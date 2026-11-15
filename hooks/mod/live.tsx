@@ -213,17 +213,17 @@ export function registerLive(on: On): void {
     // A surface that refuses the command still gets its session.
     await $.command
       .register({
-        name: 'timeline',
+        name: 'timestamps',
         description: 'Where this session\'s time went, turn by turn',
         argumentHint: '[longest]',
       })
-      .catch(() => undefined)
+      .catch(err => $.ui.log('REGFAIL ' + String(err)))
     return next(e)
   })
 
   // /timeline opens the pane on what bash has recorded so far; /timeline
   // longest opens it with the longest turns first.
-  on('command.run', { command: 'timeline' }, async ($, e) => {
+  on('command.run', { command: 'timestamps' }, async ($, e) => {
     const wanted = e.args.trim().toLowerCase()
     if (wanted !== '') await update($, isTimelineByTime, () => wanted.startsWith('long') || wanted === 'slow')
     const hasState = await loadTimeline($)

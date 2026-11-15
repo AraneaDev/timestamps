@@ -1082,6 +1082,33 @@ ct_command_stats() {
   return 0
 }
 
+# Keep a note that was sent to the model, for the pane's "Told Claude" tab:
+# when, what kind, and the sentence itself.
+#   $1 session id   $2 kind (slow, stopped, turn, checks, raised, usual,
+#   resume)   $3 the note   $4 "force" to skip the staged LIVE switch
+# The pane is the live layer's, so LIVE=off keeps nothing. A hook that runs
+# before any prompt has staged that switch (session start) has the config
+# loaded and decides for itself, then passes "force".
+#
+# One short append per note, and only when there is a note: nothing here
+# runs for a call that had nothing to say.
+ct_told() {
+  local sid="${1:-}" kind="${2:-}" text="${3:-}" force="${4:-}"
+  [ -n "$sid" ] && [ -n "$kind" ] && [ -n "$text" ] || return 0
+  if [ "$force" != "force" ]; then
+    ct_read_flag_var "$sid" "live"
+    [ "$_CT_FLAG" = "on" ] || return 0
+  fi
+  ct_state_ready && ct_state_file_var "$sid" || return 0
+  ct_epoch_var
+  # A tab or a newline inside the note would break the line it is kept on.
+  text="${text//$'\t'/ }"
+  text="${text//$'\n'/ }"
+  # shellcheck disable=SC2153  # _CT_NOW is assigned by ct_epoch_var
+  printf '%s\t%s\t%s\n' "$_CT_NOW" "$kind" "$text" >> "${_CT_STATE_FILE}.told" 2>/dev/null || :
+  return 0
+}
+
 # Whether a command key names a check: something run to learn whether the
 # work is sound. By the words in the key, since nothing else is known about
 # it: a short list of what tests, linters, type checkers and builds are

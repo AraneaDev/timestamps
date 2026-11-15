@@ -6883,7 +6883,13 @@ is "skill: hidden from the slash menu" "false" "$(sed -n 's/^user-invocable: //p
 # The configure skill is for Claude and Codex. In the slash menu it sat beside
 # the command, and once shared the command's name and ran in its place.
 is "configure skill: hidden from the slash menu, beside /timestamps:configure" "false" \
-  "$(sed -n 's/^user-invocable: //p' "$ROOT/skills/timestamps/SKILL.md" 2>/dev/null)"
+  "$(sed -n 's/^user-invocable: //p' "$ROOT/skills/settings/SKILL.md" 2>/dev/null)"
+# The pane's command is /timestamps, which Claude Code refuses to a module
+# whose plugin already has something of that name: a skill or a command
+# called timestamps would be /timestamps:timestamps, and the pane would
+# silently lose its command.
+refutes "configure skill: not named timestamps, which would take /timestamps from the pane" test -e "$ROOT/skills/timestamps"
+is "configure skill: named after its directory" "settings" "$(sed -n 's/^name: //p' "$ROOT/skills/settings/SKILL.md" 2>/dev/null)"
 # The command is /timestamps:configure: a command file named timestamps.md would show as
 # /timestamps:timestamps.
 asserts "command: /timestamps:configure ships" test -r "$ROOT/commands/configure.md"
@@ -7790,6 +7796,92 @@ if command -v jq >/dev/null 2>&1; then
   is "calls log: ENABLED=off lists nothing" "0" "$(tl_lines)"
 else
   skip "calls log" "jq is not installed"
+fi
+
+echo
+echo "pane: what Claude was told"
+
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$WORK/proj-p"
+  pn_prompt() { printf '{"session_id":"pn","cwd":"%s"}' "$WORK/proj-p" | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null; }
+  # $1 ms, $2 command, $3 extra top-level fields (a JSON object, optional)
+  pn_call() {
+    jq -cn --argjson ms "$1" --arg c "$2" --argjson top "${3:-null}" \
+      '{session_id: "pn", cwd: "", tool_name: "Bash", hook_event_name: "PostToolUse", duration_ms: $ms, tool_input: {command: $c}} + ($top // {})' \
+      | bash "$SCRIPTS/post-tool-use.sh" >/dev/null
+  }
+  pn_told() { printf '%s' "$(ct_state_file pn).told"; }
+  pn_last() { tail -n 1 "$(pn_told)" | cut -f2-; }
+  pn_row() { printf '%s\tproj-p\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "${3:-ok}" >> "$CLAUDE_TIMESTAMP_COMMANDS"; }
+
+  fresh; pn_prompt
+  pn_call 134000 'npm test'
+  is "told: a slow-call note is kept, with its kind" "slow	That Bash call took 2m14s." "$(pn_last)"
+  is_near "told: and the time it was sent" "$(date +%s)" "$(tail -n 1 "$(pn_told)" | cut -f1)" 2
+  pn_call 2024 'npm test' '{"hook_event_name":"PostToolUseFailure","tool_input":{"command":"npm test","timeout":2000}}'
+  is "told: a stopped call" "stopped	That Bash call was stopped at its 2s limit." "$(pn_last)"
+  pn_call 1000 'ls'
+  is "told: a call with nothing to say adds nothing" "2" "$(wc -l < "$(pn_told)" | tr -d ' ')"
+  printf '%s' "$(( $(date +%s) - 1000 ))" > "$(ct_state_file pn)"
+  pn_call 1000 'ls'
+  contains "told: a turn-length note" "turn	Turn running 16m" "$(pn_last)"
+  pn_call 4000 'npm test' '{"hook_event_name":"PostToolUseFailure"}'
+  pn_call 300 'git commit -m x'
+  contains "told: the note about checks" "checks	Before this commit: npm test failed" "$(pn_last)"
+  fresh; pn_row 'bash tests/run.sh' 130000; pn_row 'bash tests/run.sh' 133000; pn_row 'bash tests/run.sh' 136000; pn_prompt
+  jq -cn '{session_id: "pn", tool_name: "Bash", hook_event_name: "PreToolUse", tool_use_id: "p1", tool_input: {command: "bash tests/run.sh"}}' \
+    | bash "$SCRIPTS/pre-tool-use.sh" >/dev/null
+  contains "told: a raised limit" "raised	Timestamps raised this call's limit from 2m00s to 3m30s" "$(pn_last)"
+  # At session start nothing is staged yet, so the hook goes by the config.
+  printf '{"session_id":"pn","source":"startup","cwd":"%s","transcript_path":"%s/self.jsonl"}' "$WORK/proj-p" "$WORK" \
+    | bash "$SCRIPTS/session-start.sh" >/dev/null
+  contains "told: the usually slow commands at session start" "usual	Usually slow in this project: bash tests/run.sh" "$(pn_last)"
+  ct_clear_state "pn"
+  refutes "told: cleared with the session" test -e "$(pn_told)"
+  fresh 'LIVE=off'; pn_prompt; pn_call 134000 'npm test'
+  refutes "told: LIVE=off keeps no list" test -e "$(pn_told)"
+
+  echo
+  echo "pane: the report"
+
+  fresh; pn_row 'bash tests/run.sh' 130000; pn_row 'bash tests/run.sh' 133000; pn_row 'bash tests/run.sh' 136000; pn_prompt
+  pn_call 134000 'bash tests/run.sh'
+  pn_call 7000 'sleep 1; make'
+  printf 'garbage\n1\tabc\tBash\tx\tok\t0\n' >> "$(ct_state_file pn).calls"
+  printf 'torn line\n' >> "$(pn_told)"
+  printf '2026-11-14T10:00:00\t3600\t40\t900\t600\t2\n2026-11-15T09:00:00\t7200\t80\t1800\t1200\t0\tproj-p\nbroken\trow\n' > "$CLAUDE_TIMESTAMP_HISTORY"
+  pn_json="$(cd "$WORK/proj-p" && CLAUDE_CODE_SESSION_ID=pn bash "$SCRIPTS/setup.sh" --pane)"; pn_rc=$?
+  pn_q() { printf '%s' "$pn_json" | jq -r "$1"; }
+  is "pane report: exits 0" "0" "$pn_rc"
+  is "pane report: the project" "proj-p" "$(pn_q '.project')"
+  is "pane report: the session's figures, as --session --json gives them" "1" "$(pn_q '.session.turn_count')"
+  is "pane report: the open turn" "number" "$(pn_q '.session.current_turn.start | type')"
+  is "pane report: the calls, whole lines only" "2" "$(pn_q '.calls | length')"
+  is "pane report: a call's fields" "134000 Bash bash tests/run.sh ok false" "$(pn_q '.calls[0] | "\(.ms) \(.tool) \(.key) \(.outcome) \(.subagent)"')"
+  is "pane report: a call without a key has none" "null" "$(pn_q '.calls[1].key')"
+  is "pane report: a call's end time is a number" "number" "$(pn_q '.calls[0].at | type')"
+  is "pane report: the command memory for this project" "bash tests/run.sh 4 133000" "$(pn_q '.commands[0] | "\(.key) \(.runs) \(.median_ms)"')"
+  is "pane report: what Claude was told, whole lines only" "slow" "$(pn_q '[.told[].kind] | join(" ")')"
+  is "pane report: a note's text" "That Bash call took 2m14s (usually 2m13s)." "$(pn_q '.told[0].text')"
+  is "pane report: past sessions, whole rows only" "2" "$(pn_q '.history | length')"
+  is "pane report: a past session's fields" "2026-11-15T09:00:00 7200 80 1800 1200 0 proj-p" \
+    "$(pn_q '.history[1] | "\(.when) \(.secs) \(.turns) \(.waited) \(.idle) \(.failed) \(.project)"')"
+  is "pane report: a session recorded without a project has none" "null" "$(pn_q '.history[0].project')"
+  is "pane report: the settings the pane draws by" "60 on on on" \
+    "$(pn_q '.settings | "\(.slow_tool_after) \(.command_memory) \(.raise_limit) \(.check_note)"')"
+  is "pane report: the time it was made" "number" "$(pn_q '.now | type')"
+  is "pane report: checks are there, empty when none ran" "0" "$(pn_q '.session.checks | length')"
+
+  pn_json="$(cd "$WORK/proj-p" && CLAUDE_CODE_SESSION_ID=never-seen bash "$SCRIPTS/setup.sh" --pane 2>/dev/null)"; pn_rc=$?
+  is "pane report: a session with no record still reports, without one" "0 null 2" "$pn_rc $(pn_q '.session') $(pn_q '.history | length')"
+  is "pane report: and no calls" "0" "$(pn_q '.calls | length')"
+  pn_json="$(CLAUDE_CODE_SESSION_ID='' bash "$SCRIPTS/setup.sh" --pane 2>/dev/null)"; pn_rc=$?
+  is "pane report: no session id is an error" "2" "$pn_rc"
+  bash "$SCRIPTS/setup.sh" --pane --stats >/dev/null 2>&1; pn_rc=$?
+  is "pane report: refuses a second report" "2" "$pn_rc"
+  : > "$CLAUDE_TIMESTAMP_HISTORY"
+else
+  skip "pane" "jq is not installed"
 fi
 
 echo
