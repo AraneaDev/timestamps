@@ -55,6 +55,21 @@ when a call was slow. Both come from measured runs in this project.
 - A run far over its usual figure is a reason to look (a hang, more input
   than expected), not a reason to wait longer.
 
+**`That Bash call was stopped at its 2m00s limit (finishes in ~2m16s when it does).`**
+means the call did not fail: it ran out of time. The same fact arrives at
+session start as `bash tests/run.sh ~2m16s (3 runs, 2 more stopped at the 2m00s limit)`
+or `npx playwright test stopped at its limit 3 times (limit 2m00s)`.
+
+- Run it next in the background, or with a `timeout` above the "finishes in"
+  figure. Do not retry it as it was: it will be stopped again.
+- With no "finishes in" figure, nobody has seen it finish. Run it in the
+  background and check on it, rather than guessing a longer limit.
+
+The memory behind these figures keeps a call only when one command in it can
+have taken the time. A chain of commands, a loop or a multi-line script is
+not remembered. When a command's duration is worth knowing, run it as a call
+of its own, with at most `cd`, a `timeout` in front and a pipe behind.
+
 ## Time in general
 
 - During a long turn, get the current time from `date`. The last stamp in the

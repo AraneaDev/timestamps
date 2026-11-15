@@ -13,7 +13,8 @@ has a setting of its own.
 | Every prompt | `Message sent at local time 10:37:21 CEST, after a 3h break` | `INJECT_CONTEXT`, `CONTEXT_FORMAT` |
 | The first tool result after a turn passes 15 minutes, and every 15 after | `Turn running 15m02s (prompt sent 10:37:21); now 10:52:23 CEST.` | `HEARTBEAT_AFTER` |
 | One tool call takes a minute or more | `That Bash call took 2m14s.` or, for a command with a few earlier runs here, `That Bash call took 6m10s (usually 4m02s).` | `SLOW_TOOL_AFTER` |
-| A session starts in a project where some commands usually take a minute or more | `Usually slow in this project: bash tests/run.sh ~4m02s (12 runs).` | `COMMAND_MEMORY`, `SLOW_TOOL_AFTER` |
+| A Bash call is stopped at its time limit, however short the limit | `That Bash call was stopped at its 2m00s limit (finishes in ~2m16s when it does).` or, for a command with too few finished runs to say, `That Bash call was stopped at its 2m00s limit (2 of its last 3 runs were).` | `SLOW_TOOL_AFTER` (only `0` silences it), `COMMAND_MEMORY` for the part in brackets |
+| A session starts in a project where some commands usually take a minute or more, or were stopped at their limit at least twice | `Usually slow in this project: bash tests/run.sh ~4m02s (12 runs).`, with stopped runs `bash tests/run.sh ~2m16s (3 runs, 2 more stopped at the 2m00s limit)`, and for a command that has rarely finished `npx playwright test stopped at its limit 3 times (limit 2m00s)` | `COMMAND_MEMORY`, `SLOW_TOOL_AFTER` |
 | A session starts an hour or more after the last one in this project, or a conversation is resumed an hour or more after its last activity | `Previous session in this project ended 14h ago (Thu 20:12:05).` or `Resuming this conversation; last activity 14h ago (Thu 20:12:05).` | `RESUME_NOTE` |
 | A conversation is compacted | `Conversation compacted. Session started 09:12:05 (3h04m ago), 41 turns so far, 1h02m of it waiting. Longest turns: 10:37:21 (22m04s), 14:05:10 (15m30s).` | `RESUME_NOTE` |
 
@@ -32,6 +33,15 @@ appear in your `/` menu; `/timestamps:configure` is still where you change setti
 
 <sub>A real session, recorded as it happened. Claude loads the skill, runs
 `--session`, and answers with the measured numbers rather than an estimate.</sub>
+
+The figures about commands are only as good as what is remembered, so the
+memory keeps a call only when one command in it can have taken the time.
+`cd app && npm test | tail -5` is remembered as `npm test`, and
+`timeout 300 npm test` too. A chain of two commands (`sleep 240; git log`), a
+loop, a multi-line script and `bash -c '...'` are not remembered at all: one
+call has one duration, and putting it on the wrong command would teach Claude
+something false. A run stopped at its limit lasted as long as the limit, not
+as long as the command, so it is counted apart and left out of the usual time.
 
 A note can only reach Claude when a hook runs, so the turn-length note waits
 for the next tool result. A single 31-minute command produces one note when

@@ -54,15 +54,30 @@ bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/setup.sh" --session --json
 ```
 
 `--commands` shows what the duration memory knows: how long each Bash command
-usually takes in this project, from its last 20 runs. Commands are stored by
+usually takes in this project, from its last 20 runs, how many of them failed
+and how many were stopped at their time limit. A stopped run is counted in its
+own column and left out of the median, because it lasted as long as the limit
+and not as long as the command. Commands are stored by
 a short key, the program and at most two plain arguments (`npm test`,
 `bash tests/run.sh`): never the full command line, quoted text, a flag, a URL,
 a host, an absolute or home path, or anything `echo` and `printf` print. Long
 token-shaped words are dropped too, but a short secret typed as a bare
 argument can still end up in a key, so prefer an environment variable or a
-file for those. The file is
-`~/.claude/claude-timestamp-commands.tsv`; `COMMAND_MEMORY=off` stops
-recording, and deleting the file forgets everything.
+file for those.
+
+A call is remembered only when one command in it can have taken the time.
+Setup and status reports around it are ignored (`cd`, `export`, `source`,
+`echo`, `true`), and `timeout`, `nohup` and `stdbuf` are seen through, so
+`cd app && timeout 300 npm test | tail -5` counts as `npm test`. A chain of
+two commands, a loop, a multi-line script, `xargs` and `bash -c '...'` are not
+remembered: one call has one duration, and the report would rather miss a
+command than time the wrong one.
+
+The file is `~/.claude/claude-timestamp-commands-v2.tsv`; `COMMAND_MEMORY=off`
+stops recording, and deleting the file forgets everything. The memory kept by
+earlier versions named the wrong command for chains and could not be
+corrected, so it is not carried over; its file,
+`~/.claude/claude-timestamp-commands.tsv`, is removed when a session ends.
 
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/setup.sh" --commands

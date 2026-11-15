@@ -179,7 +179,7 @@ cannot run anything.
 | `HEARTBEAT_AFTER` | `900` | Tell Claude how long the open turn has run, once per this many seconds, at the first tool result after each interval; a single long tool call produces one note when it finishes. `0` disables, and `INJECT_CONTEXT=false` silences it too |
 | `SLOW_TOOL_AFTER` | `60` | Tell Claude when one tool call took at least this many seconds. `0` disables, and `INJECT_CONTEXT=false` silences it too |
 | `RESUME_NOTE` | `on` | Tell Claude, when a session starts, how long ago this conversation or project was last active. `INJECT_CONTEXT=false` silences it too |
-| `COMMAND_MEMORY` | `on` | Remember how long each Bash command takes in each project, by a short key such as `npm test`, and tell Claude at session start which are usually slow. `INJECT_CONTEXT=false` silences the note, not the recording |
+| `COMMAND_MEMORY` | `on` | Remember how long each Bash command takes in each project, by a short key such as `npm test`, and tell Claude at session start which are usually slow or keep being stopped at their time limit. Only a call that one command accounts for is remembered. `INJECT_CONTEXT=false` silences the note, not the recording |
 | `LIVE` | `on` | Claude Code only: a ticking turn clock among the footer's labels, and, when a running tool passes its usual time or `SLOW_TOOL_AFTER`, its time under the tool call (Bash, in the terminal) or in a line above the prompt. Display only; nothing is sent to Claude |
 | `SLOW_AFTER` | `60` | Colour the duration past this many seconds, `0` disables |
 | `SLOW_COLOR` | `yellow` | Colour used for a slow turn |
