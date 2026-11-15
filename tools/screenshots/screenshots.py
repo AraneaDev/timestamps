@@ -21,7 +21,7 @@ painted, escape codes and all. It models bold and italics but has no notion of
 SGR 2 (dim), which is exactly what this plugin uses by default, so Screen is
 subclassed below to track it.
 
-Usage:  python screenshots.py [hero|picker|wizard|doctor|stats|markers|session|all]
+Usage:  python screenshots.py [hero|picker|wizard|doctor|stats|markers|session|session-report|skill|pane|all]
 
 Costs: hero and picker each drive a real Claude Code session (tokens, and
 however long the model takes to answer). wizard, doctor, stats, markers and
@@ -317,7 +317,7 @@ def font_metrics(scale):
     return font, boldf, cw, ch, pad
 
 
-def compose_frame(screen, cols, top, bot, font, boldf, cw, ch, pad, content_bot=None):
+def compose_frame(screen, cols, top, bot, font, boldf, cw, ch, pad, content_bot=None, left=0, grounds=False):
     """Paint one rectangular window of a pyte screen to an RGB image.
 
     Shared by the still-shot renderer and the animation frame sampler, so a frame
@@ -332,22 +332,39 @@ def compose_frame(screen, cols, top, bot, font, boldf, cw, ch, pad, content_bot=
     fixed (top, bot) window can still contain it. Blanking past content_bot
     keeps every frame the same pixel size (required for an animation) without ever
     painting that chrome.
+
+    left and cols together choose the columns: cols of them, from column
+    left. The pane shot uses that to show the pane alone, since the columns
+    beside it hold the welcome banner with the account's name on it.
+
+    grounds paints each cell's own background before its glyph. The stills
+    before the pane never needed it: nothing they show is drawn on a fill.
+    The pane marks its open tab, its marked row and its status with one, and
+    a glyph in the colour meant for a fill is unreadable without it. Off by
+    default, so every other shot is painted exactly as it was.
     """
     if content_bot is None:
         content_bot = bot
     img = Image.new("RGB", (cols * cw + pad * 2, (bot - top + 1) * ch + pad * 2), to_rgb(BG))
     d, bg = ImageDraw.Draw(img), to_rgb(BG)
     for y in range(top, min(bot, content_bot) + 1):
-        for x in range(cols):
+        for x in range(left, left + cols):
             c = screen.buffer[y][x]
+            px, py = pad + (x - left) * cw, pad + (y - top) * ch
+            ground = bg
+            if grounds and c.bg != "default":
+                ground = to_rgb(c.bg)
+                d.rectangle([px, py, px + cw - 1, py + ch - 1], fill=ground)
             if not c.data or c.data == " ":
                 continue
             fg = to_rgb(c.fg)
+            if grounds and c.reverse:
+                fg, ground = ground, fg
+                d.rectangle([px, py, px + cw - 1, py + ch - 1], fill=ground)
             if screen.dim.get((y, x)):
-                fg = blend(fg, bg, 0.45)
+                fg = blend(fg, ground, 0.45)
             glyph = GLYPH_SUBSTITUTIONS.get(c.data, c.data)
-            d.text((pad + x * cw, pad + (y - top) * ch), glyph,
-                   font=boldf if c.bold else font, fill=fg)
+            d.text((px, py), glyph, font=boldf if c.bold else font, fill=fg)
     return img
 
 
@@ -1132,10 +1149,101 @@ def shot_skill():
     render(raw, ASSETS / "skill.webp", cols, rows, first=first, last=last)
 
 
+def shot_pane():
+    """The /timestamps pane in a real session: the overview, then the Turns tab.
+
+    Driven like the skill shot: a real session typed into through a pty, with
+    this repository's plugin loaded by --plugin-dir. Two turns give the pane
+    something to show: one quick question, then one Bash call. The command
+    memory is planted, the way the session shot plants state: it says `sleep`
+    usually takes three seconds here, so the seven-second call the session
+    really makes is one that ran over its usual time, and the slow-tool
+    threshold is five seconds so a note about it is really sent. The history
+    file is an empty one of this shot's own: the generating machine's real
+    sessions and project names have no business in a picture.
+
+    Every figure in the pane is a real measurement of this recording and
+    differs every run. /timestamps opens the pane; ctrl+x tab then gives it
+    the keys, `2` opens the Turns tab and `j` marks the turn that made the call. The stream is recorded with its
+    arrival times, so the first picture is the screen as it stood just before
+    that key and the second is the screen at the end.
+
+    The session runs in the fullscreen layout, which is where a pane is
+    docked beside the conversation; in the classic layout it is placed above
+    the prompt instead, in whatever rows are left there. ISOLATED keeps the
+    account's own settings out, so the layout is asked for on the command
+    line.
+
+    Both pictures show the pane alone. The columns beside it hold the
+    conversation and, above it, the welcome banner with the account's name,
+    email and organisation; the other session shots crop rows to lose that
+    banner, which here would also cut the top off the pane.
+    """
+    if not subprocess.run(["which", "claude"], capture_output=True).returncode == 0:
+        raise SystemExit("claude is not on PATH; cannot capture the pane shot.")
+    work = WORK / "pane" / "demo-app"
+    work.mkdir(parents=True, exist_ok=True)
+    conf = work.parent / "config.conf"
+    conf.write_text(DEMO_CONFIG + "SLOW_TOOL_AFTER=5\n")
+    memory = work.parent / "commands.tsv"
+    now = int(time.time())
+    memory.write_text("".join(f"{now - 300 + i}\tdemo-app\tsleep\t3000\tok\n" for i in range(3)))
+    history = work.parent / "history.tsv"
+    history.write_text("")
+
+    link_dir = Path(tempfile.mkdtemp(prefix="ct-", dir="/tmp"))
+    plugin = link_dir / "timestamps"
+    plugin.symlink_to(ROOT)
+
+    cols, rows = 200, 44
+    to_turns = 52.0
+    os.chdir(work)
+    try:
+        raw, timeline, _ = capture_pty(
+            ["claude", "--plugin-dir", str(plugin), "--model", "haiku", *ISOLATED,
+             "--settings", '{"tui": "fullscreen"}', "--allowedTools", "Bash"],
+            keys=[
+                (6.0, "What is the capital of Portugal? One word, no punctuation."), (7.5, "\r"),
+                (16.0, "Run this exact Bash command in the foreground, once, with no other tool "
+                       "calls, then reply only 'done': sleep 7"), (17.5, "\r"),
+                (42.0, "/timestamps"), (44.0, "\r"),
+                (to_turns, "\x18"), (to_turns + 0.6, "\t"), (to_turns + 2.0, "2"), (to_turns + 3.5, "j"),
+            ],
+            cols=cols, rows=rows, settle=6, total=90,
+            env={"CLAUDE_TIMESTAMP_CONFIG": str(conf), "CLAUDE_TIMESTAMP_COMMANDS": str(memory),
+                 "CLAUDE_TIMESTAMP_HISTORY": str(history)},
+            record=True,
+        )
+    finally:
+        shutil.rmtree(link_dir, ignore_errors=True)
+    (work.parent / "pane.raw").write_bytes(raw)
+
+    def picture(chunks, out):
+        screen = DimScreen(cols, rows)
+        stream = pyte.ByteStream(screen)
+        for chunk in chunks:
+            stream.feed(chunk)
+        lines = screen.display
+        # The pane's own rows: from its title to its bar of keys.
+        top = next((y for y in range(rows) if "timestamps" in lines[y] and "r: reload" in lines[y]), None)
+        bot = next((y for y in range(rows - 1, -1, -1) if "1-6: tabs" in lines[y]), None)
+        if top is None or bot is None:
+            raise SystemExit(f"the pane was not on screen for {out.name}; see {work.parent / 'pane.raw'}")
+        # Its columns: right of the rule the surface draws between the
+        # conversation and the pane, which is the last one on the title's row.
+        left = lines[top].rfind("│", 0, lines[top].index("timestamps")) + 1
+        font, boldf, cw, ch, pad = font_metrics(2)
+        save_image(compose_frame(screen, cols - left, top, bot, font, boldf, cw, ch, pad, left=left, grounds=True), out)
+
+    picture([chunk for at, chunk in timeline if at < to_turns], ASSETS / "pane.webp")
+    picture([chunk for _, chunk in timeline], ASSETS / "pane-turns.webp")
+
+
 SHOTS = {"hero": shot_hero, "picker": shot_picker, "wizard": shot_wizard,
          "doctor": shot_doctor, "stats": shot_stats,
          "markers": shot_markers, "session": shot_session,
-         "session-report": shot_session_report, "skill": shot_skill}
+         "session-report": shot_session_report, "skill": shot_skill,
+         "pane": shot_pane}
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"

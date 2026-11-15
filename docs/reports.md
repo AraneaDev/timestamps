@@ -67,6 +67,18 @@ it again. It shows where the session's time went, on six tabs:
 | Told Claude | Every note the plugin sent Claude this session, newest first: slow and stopped calls, raised limits, stale checks, turn length, and what it said at session start |
 | History | Finished sessions by day (time, how long you waited, turns) and by project when `PROJECTS` is on |
 
+<p align="center">
+  <img src="../assets/pane.webp" alt="The Overview tab of the pane" width="760">
+</p>
+
+<p align="center">
+  <img src="../assets/pane-turns.webp" alt="The Turns tab of the pane, with the marked turn's call beneath the list" width="760">
+</p>
+
+<sub>A real session, recorded as it happened. The command memory was told
+beforehand that `sleep` usually takes three seconds, so the seven-second call
+the session made is one that ran over its usual time.</sub>
+
 A call is listed when it took five seconds or more, or was stopped at its
 limit. It is marked `▲` when it ran one and a half times its usual time or
 more, `■` when it was stopped at its limit and `✗` when it failed. A chain of
