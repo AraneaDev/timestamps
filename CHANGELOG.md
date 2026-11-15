@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.41](https://github.com/AraneaDev/timestamps/compare/v0.0.40...v0.0.41) (2026-11-15)
+
+
+### Features
+
+* a command memory Claude can trust, limits raised before a stop, stale-check notes and a /timeline pane ([#117](https://github.com/AraneaDev/timestamps/issues/117)) ([01e7a55](https://github.com/AraneaDev/timestamps/commit/01e7a5533f6b2b77abc50d06737bcede33de3f9a))
+
 ## [0.0.40](https://github.com/AraneaDev/timestamps/compare/v0.0.39...v0.0.40) (2026-10-14)
 
 
