@@ -7746,6 +7746,52 @@ refutes "check setting: a value that is not on or off is refused" bash "$SCRIPTS
 fresh
 
 echo
+echo "timeline: the calls log"
+
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$WORK/proj-t"
+  tl_prompt() { printf '{"session_id":"tl","cwd":"%s"}' "$WORK/proj-t" | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null; }
+  # $1 ms, $2 command, $3 extra top-level fields (a JSON object, optional)
+  tl_call() {
+    jq -cn --argjson ms "$1" --arg c "$2" --argjson top "${3:-null}" \
+      '{session_id: "tl", tool_name: "Bash", hook_event_name: "PostToolUse", duration_ms: $ms, tool_input: {command: $c}} + ($top // {})' \
+      | bash "$SCRIPTS/post-tool-use.sh" >/dev/null
+  }
+  tl_log() { printf '%s' "$(ct_state_file tl).calls"; }
+  tl_last() { tail -n 1 "$(tl_log)" | cut -f2-6; }
+  tl_lines() { if [ -r "$(tl_log)" ]; then wc -l < "$(tl_log)" | tr -d ' '; else echo 0; fi; }
+
+  fresh; tl_prompt
+  tl_call 6000 'cd x && npm test | tail -3'
+  is "calls log: a call of five seconds or more is listed" "6000	Bash	npm test	ok	0" "$(tl_last)"
+  is_near "calls log: with the time it ended" "$(date +%s)" "$(tail -n 1 "$(tl_log)" | cut -f1)" 2
+  tl_call 4999 'npm test'
+  is "calls log: a shorter call is not" "1" "$(tl_lines)"
+  tl_call 7000 'sleep 1; make'
+  is "calls log: a call without a key is listed by its tool" "7000	Bash	-	ok	0" "$(tl_last)"
+  tl_call 8000 'npm test' '{"hook_event_name":"PostToolUseFailure"}'
+  is "calls log: a failure says so" "8000	Bash	npm test	fail	0" "$(tl_last)"
+  tl_call 2024 'npm test' '{"hook_event_name":"PostToolUseFailure","tool_input":{"command":"npm test","timeout":2000}}'
+  is "calls log: a call stopped at its limit is listed however short" "2024	Bash	npm test	limit	0" "$(tl_last)"
+  tl_call 9000 'x' '{"tool_name":"WebFetch"}'
+  is "calls log: other tools too" "9000	WebFetch	-	ok	0" "$(tl_last)"
+  tl_call 9000 'npm test' '{"agent_id":"sub1"}'
+  is "calls log: a subagent's call is marked" "9000	Bash	npm test	ok	1" "$(tl_last)"
+  tl_before="$(tl_lines)"
+  tl_call 9000 'npm test' '{"tool_input":{"command":"npm test","run_in_background":true}}'
+  is "calls log: a background call is not listed" "$tl_before" "$(tl_lines)"
+  ct_clear_state "tl"
+  refutes "calls log: cleared with the session" test -e "$(tl_log)"
+
+  fresh 'LIVE=off'; tl_prompt; tl_call 9000 'npm test'
+  is "calls log: LIVE=off lists nothing" "0" "$(tl_lines)"
+  fresh 'ENABLED=off'; tl_prompt; tl_call 9000 'npm test'
+  is "calls log: ENABLED=off lists nothing" "0" "$(tl_lines)"
+else
+  skip "calls log" "jq is not installed"
+fi
+
+echo
 echo "command memory: report"
 
 if command -v jq >/dev/null 2>&1; then

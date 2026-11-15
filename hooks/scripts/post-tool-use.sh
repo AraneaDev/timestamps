@@ -222,6 +222,29 @@ if [ -z "$agent_id" ] || [ "$subagent_notes" = "on" ]; then
   fi
   note="$_CT_NOTE"
 fi
+# The timeline pane's detail: one line for each call that took five seconds
+# or more, or was stopped at its limit however short. End time, duration,
+# tool, command key (- for none), outcome, and whether a subagent made it.
+# Only ever the key, as in the command memory, never the command line. The
+# live layer draws it (hooks/mod/timeline.ts), so LIVE=off writes nothing; it
+# does not keep this hook awake by itself, and a session with every
+# tool-facing setting off gets a timeline of turns without calls.
+#
+# An append of one short line, for the reason the tool log's is one.
+if [ -n "$ms" ] && [ "$background" != "true" ] && { [ "$ms" -ge 5000 ] || [ -n "$stop_ms" ]; }; then
+  ct_read_flag_var "$session_id" "live"
+  if [ "$_CT_FLAG" = "on" ] && ct_state_ready && ct_state_file_var "$session_id"; then
+    ct_epoch_var
+    tl_outcome="$outcome"
+    [ -z "$stop_ms" ] || tl_outcome="limit"
+    tl_agent=0
+    [ -z "$agent_id" ] || tl_agent=1
+    # shellcheck disable=SC2153  # _CT_NOW is assigned by ct_epoch_var (lib/state.sh)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_CT_NOW" "$ms" "$tool_name" "${cmd_key:--}" "$tl_outcome" "$tl_agent" \
+      >> "${_CT_STATE_FILE}.calls" 2>/dev/null || :
+  fi
+fi
+
 # Checks, and what became of them. A check that finishes is recorded; a
 # commit, a push or a pull request that went through is the moment to say
 # which checks did not pass or have had files change since. Both need the

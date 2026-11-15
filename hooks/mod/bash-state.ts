@@ -75,3 +75,51 @@ export async function readCommandsFile(h: Host): Promise<string> {
     return ''
   }
 }
+
+// What the timeline pane is drawn from: the session's turn log and calls log
+// as bash wrote them, the start of a turn still open, and what is needed to
+// show them (the configured zone, the project the usual times are filed
+// under). A file that is not there reads as empty: a session before its
+// first turn has a timeline with nothing in it, not an error.
+export type TimelineFiles = {
+  turnlog: string
+  calls: string
+  /** epoch seconds of the open turn; undefined between turns */
+  openStart?: number
+  tz?: string
+  project?: string
+  isCommandMemoryOn: boolean
+}
+
+export async function readTimelineFiles(h: Host): Promise<TimelineFiles | undefined> {
+  try {
+    const dir = await stateDir(h)
+    const sid = (await h.sessionId()).replace(/[^A-Za-z0-9_-]/g, '')
+    if (!dir || !sid) return undefined
+    const base = `${dir}/${sid}`
+    const text = (path: string) => h.read(path).catch(() => '')
+    // The marker's presence is the answer, so an empty file counts.
+    const isClosed = await h.read(`${base}.closed`).then(
+      () => true,
+      () => false,
+    )
+    const [turnlog, calls, open, tz, project, cmdmem] = await Promise.all([
+      text(`${base}.turnlog`),
+      text(`${base}.calls`),
+      isClosed ? Promise.resolve(undefined) : text(base).then(t => t.trim() || undefined),
+      readFlag(h, base, 'tz'),
+      readFlag(h, base, 'project'),
+      readFlag(h, base, 'cmdmem'),
+    ])
+    return {
+      turnlog,
+      calls,
+      openStart: whole(open),
+      tz,
+      project: project && project !== '-' ? project : undefined,
+      isCommandMemoryOn: cmdmem === 'on',
+    }
+  } catch {
+    return undefined
+  }
+}

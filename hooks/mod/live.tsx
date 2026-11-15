@@ -3,11 +3,12 @@
 // records. What a drawing reads is in $.state, so a hot reload keeps it.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
-import type { LiveCall } from '../../types'
-import { readBashState, readCommandsFile } from './bash-state.ts'
+import type { LiveCall, TimelineView } from '../../types'
+import { readBashState, readCommandsFile, readTimelineFiles } from './bash-state.ts'
 import type { BashState, Host } from './bash-state.ts'
 import { cmdKey } from './cmdkey.ts'
 import { formatDuration } from './format.ts'
+import { buildTimeline, clockOf, timelineLines } from './timeline.ts'
 import { usualSeconds } from './usual.ts'
 
 export const running = atom({ plugin: 'timestamps', key: 'running' } as const, [] as LiveCall[])
@@ -20,6 +21,13 @@ export const sessionStartedAt = atom(
   null as number | null,
 )
 
+// The timeline pane: null until the person first asks for it, so a session
+// that never opens it reads nothing for it.
+export const timeline = atom({ plugin: 'timestamps', key: 'timeline' } as const, null as TimelineView | null)
+export const isTimelineByTime = atom({ plugin: 'timestamps', key: 'isTimelineByTime' } as const, false)
+
+const TIMELINE = 'timestamps-timeline'
+const TIMELINE_TITLE = 'Timeline'
 const TICK_MS = 1000
 const MIN_BAND_S = 10
 const USUAL_FACTOR = 1.5
@@ -111,6 +119,28 @@ function stopTicking(): void {
   ticker = undefined
 }
 
+// Read what bash recorded for this session and keep it for the pane. Bash
+// measures; this only arranges. Returns whether there was anything to read.
+async function loadTimeline($: EngineInterface): Promise<boolean> {
+  const host = hostOf($)
+  const files = await readTimelineFiles(host)
+  if (files === undefined) {
+    await update($, timeline, () => null)
+    return false
+  }
+  const project = files.project
+  const tsv = files.isCommandMemoryOn && project !== undefined ? await readCommandsFile(host) : ''
+  const usual = new Map<string, number | undefined>()
+  const usualOf = (key: string) => {
+    if (!usual.has(key)) usual.set(key, tsv === '' ? undefined : usualSeconds(tsv, project, key))
+    return usual.get(key)
+  }
+  const now = Math.floor((await $.clock.now()) / 1000)
+  const built = buildTimeline(files.turnlog, files.calls, files.openStart, now, usualOf)
+  await update($, timeline, () => ({ turns: built.turns, tz: files.tz }))
+  return true
+}
+
 let redraw: Timer | undefined
 // Looked up once per call, when it has run MIN_BAND_S; lost on reload, then
 // looked up again. null means "looked, nothing usual".
@@ -180,7 +210,60 @@ export function registerLive(on: On): void {
     // this environment's timers are new. Start them again.
     if ((await read($, turnStartedAt)) !== null) startTicking($)
     syncRedraw($, (await read($, running)).length > 0)
+    // A surface that refuses the command still gets its session.
+    await $.command
+      .register({
+        name: 'timeline',
+        description: 'Where this session\'s time went, turn by turn',
+        argumentHint: '[longest]',
+      })
+      .catch(() => undefined)
     return next(e)
+  })
+
+  // /timeline opens the pane on what bash has recorded so far; /timeline
+  // longest opens it with the longest turns first.
+  on('command.run', { command: 'timeline' }, async ($, e) => {
+    const wanted = e.args.trim().toLowerCase()
+    if (wanted !== '') await update($, isTimelineByTime, () => wanted.startsWith('long') || wanted === 'slow')
+    const hasState = await loadTimeline($)
+    if (!hasState) return { text: 'Timestamps has recorded nothing for this session yet.' }
+    const opened = await $.ui.open({ id: TIMELINE, title: TIMELINE_TITLE })
+    return {
+      text: opened.isPlaced
+        ? 'Timeline opened. Focus it with ctrl+x tab: s changes the order, r reads it again.'
+        : 'Timeline is ready and shows once there is room for a pane.',
+    }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: TIMELINE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const view = await read($, timeline)
+    if (view === null) return <Text dimColor>Run /timeline to read this session.</Text>
+    const byTime = await read($, isTimelineByTime)
+    const lines = timelineLines(view, { columns: e.props.bodyColumns, byTime, clock: clockOf(view.tz) })
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row" columnGap={2}>
+          <Button key="order" hotkey="s" plain onPress={() => update($, isTimelineByTime, v => !v)}>
+            {byTime ? 'as it happened' : 'longest first'}
+          </Button>
+          <Button key="reload" hotkey="r" plain onPress={() => loadTimeline($)}>
+            read again
+          </Button>
+        </Box>
+        {lines.map(line => (
+          <Text
+            bold={line.tone === 'head'}
+            dimColor={line.tone === 'dim'}
+            color={line.tone === 'warn' ? 'warning' : undefined}
+            wrap="truncate"
+          >
+            {line.text}
+          </Text>
+        ))}
+      </Box>
+    )
   })
 
   // A /clear ends the conversation without a new session.start: the session
@@ -221,6 +304,8 @@ export function registerLive(on: On): void {
       for (const k of [...usualByCall.keys()]) if (!left.some(c => cacheKey(c) === k)) usualByCall.delete(k)
       syncRedraw($, left.length > 0)
       await paint($)
+      // An open timeline gains the turn that just ended.
+      if ((await read($, timeline)) !== null) await loadTimeline($)
     }
     return next(e)
   }).catch(($, e, next) => next(e))

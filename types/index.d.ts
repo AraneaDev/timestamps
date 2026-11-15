@@ -12,6 +12,27 @@ export type LiveCall = {
   isAsked?: boolean
 }
 
+export type TimelineView = {
+  /** the session turn by turn, as hooks/mod/timeline.ts builds it */
+  turns: {
+    n: number
+    startedAt: number
+    secs: number
+    how: 'stop' | 'interrupted' | 'error' | 'running'
+    calls: {
+      endedAt: number
+      ms: number
+      tool: string
+      key?: string
+      outcome: 'ok' | 'fail' | 'limit'
+      isSubagent: boolean
+      usualS?: number
+    }[]
+  }[]
+  /** the zone clock times are shown in; absent for the machine's own */
+  tz?: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'timestamps': {
@@ -24,6 +45,10 @@ declare module 'claude-code' {
       sessionStartedAt: number | null
       /** the footer label the clock draws; null draws none */
       clockText: string | null
+      /** what the timeline pane draws; null until /timeline first loads it */
+      timeline: TimelineView | null
+      /** the pane's order: longest turn first, or as they happened */
+      isTimelineByTime: boolean
     }
   }
 }

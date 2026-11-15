@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { readBashState, readCommandsFile } from './bash-state.ts'
+import { readBashState, readCommandsFile, readTimelineFiles } from './bash-state.ts'
 import type { Host } from './bash-state.ts'
 
 const DIR = '/tmp/x/claude-timestamp-1000'
@@ -88,4 +88,44 @@ test('the commands file defaults beside the config', async () => {
 
 test('an unreadable commands file reads empty', async () => {
   expect(await readCommandsFile(host({}))).toBe('')
+})
+
+test('the timeline reads the turn log, the calls log, the open turn and the zone', async () => {
+  const h = host({
+    [`${DIR}/abcd-1`]: '5500\n',
+    [`${DIR}/abcd-1.turnlog`]: 'turns',
+    [`${DIR}/abcd-1.calls`]: 'calls',
+    [`${DIR}/abcd-1.tz`]: 'Europe/Amsterdam\n',
+    [`${DIR}/abcd-1.project`]: 'app',
+    [`${DIR}/abcd-1.cmdmem`]: 'on',
+  })
+  expect(await readTimelineFiles(h)).toEqual({
+    turnlog: 'turns',
+    calls: 'calls',
+    openStart: 5500,
+    tz: 'Europe/Amsterdam',
+    project: 'app',
+    isCommandMemoryOn: true,
+  })
+})
+
+test('a closed turn is not an open one', async () => {
+  const h = host({ [`${DIR}/abcd-1`]: '5500', [`${DIR}/abcd-1.closed`]: '', [`${DIR}/abcd-1.turnlog`]: 'turns' })
+  expect((await readTimelineFiles(h))?.openStart).toBe(undefined)
+})
+
+test('a session with nothing recorded reads as empty logs', async () => {
+  expect(await readTimelineFiles(host({}))).toEqual({
+    turnlog: '',
+    calls: '',
+    openStart: undefined,
+    tz: undefined,
+    project: undefined,
+    isCommandMemoryOn: false,
+  })
+})
+
+test('no state directory, no timeline', async () => {
+  // A default parameter would turn an undefined uid back into the fake one.
+  expect(await readTimelineFiles({ ...host({}), uid: async () => undefined })).toBe(undefined)
 })

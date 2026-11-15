@@ -53,6 +53,44 @@ bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/setup.sh" --turns
 bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/setup.sh" --session --json
 ```
 
+## The timeline pane
+
+In Claude Code, `/timeline` opens a pane beside the conversation that shows
+where the session's time went, turn by turn: when each turn started, how long
+it took, and under it the calls that took five seconds or more, longest
+first.
+
+```text
+s: longest first  r: read again
+9 turns · 2h31m working · since 17:35
+#7  18:34  28m41s · 9m32s in 8 listed calls
+    1m11s  bash tests/run.sh  usually 1m05s
+#8  19:10  29m45s · 11m02s in 6 listed calls
+    2m47s  bash tools/check-docs.sh  ▲ 2.5× usual 1m07s
+    2m00s  bash tests/run.sh  ■ stopped at its limit
+    1m27s  Bash, several commands
+   18m43s  the rest: thinking, writing, calls under 5s
+#9  19:41  20s
+```
+
+A call is marked when it ran one and a half times its usual time here or
+more, when it was stopped at its limit, and when it failed. A chain of
+commands has no single name, so it is listed as several commands; a call made
+by a subagent says so. "The rest" is the turn's time less its listed calls,
+and is left out when calls ran side by side and add up to more than the turn.
+
+With the pane focused (ctrl+x tab), `s` switches between the order the turns
+happened in and longest first, and `r` reads the session again; the arrows
+scroll. `/timeline longest` opens it longest first. The pane updates when a
+turn ends.
+
+It draws what the hooks recorded and records nothing itself. The calls come
+from a per-session list the tool hook keeps while `LIVE` is on and any of the
+settings that keep that hook awake is (the notes, `COMMAND_MEMORY`,
+`CHECK_NOTE` or `TOOL_TIMING`); with all of those off the pane still shows
+the turns. Like the command memory, the list holds a short key per call,
+never the command line, and it is cleared when the session ends.
+
 `--session` also lists the checks run in the session, newest first: when each
 ran, how it ended, and how many files in the work tree have changed since.
 `--session --json` carries them as `checks`, with `changed` null where it is
