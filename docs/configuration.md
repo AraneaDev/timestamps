@@ -179,6 +179,7 @@ cannot run anything.
 | `HEARTBEAT_AFTER` | `900` | Tell Claude how long the open turn has run, once per this many seconds, at the first tool result after each interval; a single long tool call produces one note when it finishes. `0` disables, and `INJECT_CONTEXT=false` silences it too |
 | `SLOW_TOOL_AFTER` | `60` | Tell Claude when one tool call took at least this many seconds. `0` disables, and `INJECT_CONTEXT=false` silences it too |
 | `RESUME_NOTE` | `on` | Tell Claude, when a session starts, how long ago this conversation or project was last active. `INJECT_CONTEXT=false` silences it too |
+| `CHECK_NOTE` | `on` | Keep track of the checks Claude runs in a session (tests, linters, type checkers and builds, recognised by the words in the command) and tell it, after a commit, a push or a pull request, which of them failed or have had files change since they ran. `setup.sh --session` lists them all. `INJECT_CONTEXT=false` silences it |
 | `RAISE_LIMIT` | `on` | Before a Bash call runs, raise its time limit when the command memory says it would be stopped: to one and a half times the longest run seen in this project, or twice the limit it was last stopped at, up to Claude Code's own maximum. Claude is told each time. It never lowers a limit and never approves a call. Needs `COMMAND_MEMORY=on`; `INJECT_CONTEXT=false` switches it off too, since the plugin does not change a call it may not mention |
 | `COMMAND_MEMORY` | `on` | Remember how long each Bash command takes in each project, by a short key such as `npm test`, and tell Claude at session start which are usually slow or keep being stopped at their time limit. Only a call that one command accounts for is remembered. `INJECT_CONTEXT=false` silences the note, not the recording |
 | `LIVE` | `on` | Claude Code only: a ticking turn clock among the footer's labels, and, when a running tool passes its usual time or `SLOW_TOOL_AFTER`, its time under the tool call (Bash, in the terminal) or in a line above the prompt. Display only; nothing is sent to Claude |
@@ -212,13 +213,13 @@ Clock formats render as `14:03:22` for `24h`, `14:03` for `short`, `2:03 PM`
 for `12h`, and `2026-08-19T14:03:22` for `iso`. Any value containing a `%` is
 treated as a strftime string, so the escape hatch needs no separate setting.
 
-Four settings cost something per tool call rather than once per message:
-`TOOL_TIMING`, `HEARTBEAT_AFTER`, `SLOW_TOOL_AFTER` and `COMMAND_MEMORY`. While any of them is
+Five settings cost something per tool call rather than once per message:
+`TOOL_TIMING`, `HEARTBEAT_AFTER`, `SLOW_TOOL_AFTER`, `COMMAND_MEMORY` and `CHECK_NOTE`. While any of them is
 on, a hook reads every tool call's payload to decide whether to record it or
 tell Claude something. On the machine this was measured on, that came to a few
 milliseconds per tool call (roughly 3 to 5 ms above the idle path). The two
-notes and `COMMAND_MEMORY` are on by default and `TOOL_TIMING` is off. Setting
-`HEARTBEAT_AFTER=0`, `SLOW_TOOL_AFTER=0`, `COMMAND_MEMORY=off` and
+notes, `COMMAND_MEMORY` and `CHECK_NOTE` are on by default and `TOOL_TIMING` is off. Setting
+`HEARTBEAT_AFTER=0`, `SLOW_TOOL_AFTER=0`, `COMMAND_MEMORY=off`, `CHECK_NOTE=off` and
 `TOOL_TIMING=off` together brings back the free path,
 where the hook exits before it reads the payload. Claude Code reports how long
 each call took, so the plugin no longer times them itself, but the hook that

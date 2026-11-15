@@ -1,6 +1,6 @@
 ---
 name: time-awareness
-description: Use when a Timestamps system reminder or Codex hook context says how long a turn has run, that a tool call was slow, or that a conversation or project is resumed after a gap; when the user asks how long something took, when they started, or where their time went; and before writing a date into notes, memory, a commit or a document.
+description: Use when a Timestamps system reminder or Codex hook context says how long a turn has run, that a tool call was slow, or that a conversation or project is resumed after a gap; when the user asks how long something took, when they started, or where their time went; before saying that tests pass or work is verified; and before writing a date into notes, memory, a commit or a document.
 user-invocable: false
 ---
 
@@ -82,6 +82,31 @@ The memory behind these figures keeps a call only when one command in it can
 have taken the time. A chain of commands, a loop or a multi-line script is
 not remembered. When a command's duration is worth knowing, run it as a call
 of its own, with at most `cd`, a `timeout` in front and a pipe behind.
+
+## Before saying the work is verified
+
+**`Before this commit: bash tests/run.sh passed 48m12s ago, 9 files changed since; bash tools/check-docs.sh failed 12m05s ago, not run since.`**
+arrives after a commit, a push or a pull request, when a check you ran this
+session did not pass or files have changed since it ran.
+
+- Look at what changed. If it could affect the check, run the check again
+  before reporting, and amend or follow up if it fails.
+- If it could not (a comment, a document the check does not read), say that
+  the check ran before those edits rather than that everything passes.
+- A check that failed and was not run again is not a passing check, whatever
+  was fixed since.
+
+Without a commit there is no note. Before telling the user that tests pass,
+read the checks in the session report: every check, when it ran, and what
+has changed since.
+
+```bash
+setup="$(git rev-parse --show-toplevel 2>/dev/null || true)/hooks/scripts/setup.sh"
+if [ ! -f "$setup" ] && [ -n "${CLAUDE_SKILL_DIR:-}" ]; then
+  setup="${CLAUDE_SKILL_DIR}/../../hooks/scripts/setup.sh"
+fi
+bash "$setup" --session
+```
 
 ## Time in general
 

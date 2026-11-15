@@ -15,7 +15,7 @@ costs no model context. The exceptions are the short notes listed under
 | `Stop` / `StopFailure` | Close the turn and record what it cost |
 | `SessionEnd` | Report the summary, record the session, clear its state |
 | `PreToolUse`, Bash calls only | Raise the call's time limit when the command memory says it would be stopped, and tell Claude. Changes that one argument and nothing else; never approves a call |
-| `PostToolUse` / `PostToolUseFailure` | Tell Claude when a turn runs long or a call was slow; with `TOOL_TIMING=on`, record what each call cost |
+| `PostToolUse` / `PostToolUseFailure` | Tell Claude when a turn runs long or a call was slow, and after a commit which checks are out of date; with `TOOL_TIMING=on`, record what each call cost |
 
 The skill, `skills/time-awareness/SKILL.md`, is plain instructions that Claude
 loads when a note arrives or a time question comes up. It adds nothing to a

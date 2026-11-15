@@ -1677,7 +1677,7 @@ is "a rejected format cannot smuggle a second setting into the file" "on" "$CT_E
 # to be wrong, so flag twenty-one is covered the day it is added.
 fresh 'ENABLED=on'
 flag_table="$(sed -n '/^CT_FLAG_TABLE="$/,/^"$/p' "$SCRIPTS/setup.sh" | sed '1d;$d')"
-is "every setting has a flag in the table" "27" \
+is "every setting has a flag in the table" "28" \
   "$(printf '%s\n' "$flag_table" | grep -c '^[a-z]')"
 # shellcheck disable=SC2034  # t_rest is read to consume the rest of the row
 while read -r t_flag t_rest; do
@@ -6435,7 +6435,7 @@ is "stage: INJECT_CONTEXT=false stages no heartbeat" "0" "$(ct_read_flag stage-b
 is "stage: INJECT_CONTEXT=false stages no slow tool note" "0" "$(ct_read_flag stage-b slowtool)"
 refutes "stage: no timing and no notes keeps the gate shut" test -e "$(ct_state_file stage-b).timing-on"
 
-fresh 'HEARTBEAT_AFTER=0' 'SLOW_TOOL_AFTER=0' 'COMMAND_MEMORY=off'
+fresh 'HEARTBEAT_AFTER=0' 'SLOW_TOOL_AFTER=0' 'COMMAND_MEMORY=off' 'CHECK_NOTE=off'
 printf '{"session_id":"stage-c"}' | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null
 refutes "stage: both notes at 0 keep the gate shut" test -e "$(ct_state_file stage-c).timing-on"
 
@@ -7578,6 +7578,171 @@ ct_load_config
 is "raise setting: --raise-limit=off writes it" "off" "$CT_RAISE_LIMIT"
 contains "raise setting: --show lists it" "Raise limit     off" "$(bash "$SCRIPTS/setup.sh" --show)"
 refutes "raise setting: a value that is not on or off is refused" bash "$SCRIPTS/setup.sh" --raise-limit=maybe
+fresh
+
+echo
+echo "checks: which commands count"
+
+for ev_key in 'bash tests/run.sh' 'npm test' 'pytest' 'shellcheck' 'npx vitest run' 'cargo build' \
+              'bash tools/check-docs.sh' 'claude plugin test' 'npx playwright test' 'go vet'; do
+  asserts "check: $ev_key is one" ct_is_check_key "$ev_key"
+done
+for ev_key in 'make' 'git checkout tests' 'cat tests/run.sh' 'ls' 'npm install' 'latest' 'python3 contest.py' \
+              'gh pr checks' 'grep test' ''; do
+  refutes "check: '$ev_key' is not one" ct_is_check_key "$ev_key"
+done
+
+if command -v jq >/dev/null 2>&1; then
+  ev_pub() { printf '%s' "$1" | jq -Rrs "$CT_JQ_CMDKEY"' . | ct_cmdparse | .publish'; }
+  is "publish: git commit" "commit" "$(ev_pub 'git commit -m x')"
+  is "publish: after other commands in a chain" "commit" "$(ev_pub 'git add -A && git commit -m "x; y"')"
+  is "publish: options before the subcommand are passed over" "commit" "$(ev_pub 'git -c user.name=t -c user.email=t@example.invalid commit -q -m x')"
+  is "publish: -C and its directory too" "push" "$(ev_pub 'git -C sub push origin main')"
+  is "publish: gh pr create" "pull request" "$(ev_pub 'gh pr create --fill')"
+  is "publish: gh pr merge" "pull request" "$(ev_pub 'gh pr merge 12 --squash')"
+  is "publish: the last one on the line" "push" "$(ev_pub 'git commit -m x && git push')"
+  is "publish: a commit message with a heredoc" "commit" "$(ev_pub "$(printf 'git commit -m "$(cat <<EOF\nbody\nEOF\n)"')")"
+  is "publish: git log is none" "" "$(ev_pub 'git log --grep commit')"
+  is "publish: git commit-tree is none" "" "$(ev_pub 'git commit-tree abc')"
+  is "publish: gh pr view is none" "" "$(ev_pub 'gh pr view 12')"
+  is "publish: an echo of the words is none" "" "$(ev_pub 'echo git commit')"
+  is "publish: a non-string is none" "" "$(jq -rn "$CT_JQ_CMDKEY"' null | ct_cmdparse | .publish')"
+else
+  skip "publish" "jq is not installed"
+fi
+
+echo
+echo "checks: the note"
+
+if command -v jq >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+  ev_repo="$WORK/proj-e"
+  mkdir -p "$ev_repo/src"
+  git -C "$ev_repo" init -q 2>/dev/null
+  printf 'ignored.log\n' > "$ev_repo/.gitignore"
+  : > "$ev_repo/a.txt"; : > "$ev_repo/src/b.txt"
+  git -C "$ev_repo" add -A >/dev/null 2>&1
+  git -C "$ev_repo" -c user.name=t -c user.email=t@example.invalid commit -q -m first >/dev/null 2>&1
+  # Everything in the repository is an hour old, so only what a test touches
+  # afterwards is newer than a check.
+  ev_old() { touch -t "$(rs_ago 60)" "$ev_repo/.gitignore" "$ev_repo/a.txt" "$ev_repo/src/b.txt"; rm -f "$ev_repo/c.txt" "$ev_repo/ignored.log"; }
+  ev_prompt() { printf '{"session_id":"ev","cwd":"%s"}' "$ev_repo" | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null; }
+  # $1 ms, $2 command, $3 event, $4 extra top-level fields (a JSON object, optional)
+  ev_call() {
+    jq -cn --argjson ms "$1" --arg c "$2" --arg ev "${3:-PostToolUse}" --arg cwd "$ev_repo" --argjson top "${4:-null}" \
+      '{session_id: "ev", cwd: $cwd, tool_name: "Bash", hook_event_name: $ev, duration_ms: $ms, tool_input: {command: $c}} + ($top // {})' \
+      | bash "$SCRIPTS/post-tool-use.sh" | jq -r '.hookSpecificOutput.additionalContext // ""'
+  }
+  ev_mark() { printf '%s' "$(ct_state_file ev).chk-$1"; }
+  # Move a check N minutes into the past: its record and its file's own time.
+  ev_age() {
+    local f; f="$(ev_mark "$1")"
+    awk -F '\t' -v OFS='\t' -v t="$(( $(date +%s) - $2 * 60 ))" '{ $1 = t; print }' "$f" > "$f.new" && mv "$f.new" "$f"
+    touch -t "$(rs_ago "$2")" "$f"
+  }
+  # Durations move by a second between the call and the assertion.
+  ev_t() { sed -E 's/[0-9]+m[0-9]+s ago/T ago/g; s/[0-9]+s ago/T ago/g'; }
+  ev_commit='git add -A && git commit -m "a message; with && in it"'
+
+  fresh; ev_old; ev_prompt
+  ev_call 5000 'cd x && bash tests/run.sh | tail -3' >/dev/null
+  is "check note: a finished check is recorded" "ok	bash tests/run.sh" "$(cut -f2-3 "$(ev_mark bash_tests_run_sh)")"
+  is "check note: nothing changed since, nothing said" "" "$(ev_call 300 "$ev_commit")"
+  ev_age bash_tests_run_sh 10
+  : > "$ev_repo/a.txt"; : > "$ev_repo/c.txt"; : > "$ev_repo/ignored.log"
+  is "check note: files changed since a check that passed" \
+    "Before this commit: bash tests/run.sh passed T ago, 2 files changed since." "$(ev_call 300 "$ev_commit" | ev_t)"
+  is "check note: a push is named as one" \
+    "Before this push: bash tests/run.sh passed T ago, 2 files changed since." "$(ev_call 300 'git push origin main' | ev_t)"
+  is "check note: a pull request too" \
+    "Before this pull request: bash tests/run.sh passed T ago, 2 files changed since." "$(ev_call 300 'gh pr create --fill' | ev_t)"
+  is "check note: a commit and a push together are a push" \
+    "Before this push: bash tests/run.sh passed T ago, 2 files changed since." "$(ev_call 300 'git commit -m x && git push' | ev_t)"
+  is "check note: a commit that failed published nothing" "" "$(ev_call 300 "$ev_commit" PostToolUseFailure)"
+  is "check note: git status is not a publish" "" "$(ev_call 300 'git status')"
+  is "check note: a background commit is not waited for" "" \
+    "$(ev_call 300 "$ev_commit" PostToolUse '{"tool_input":{"command":"git commit -m x","run_in_background":true}}')"
+  is "check note: the report lists it" "1" \
+    "$(cd "$ev_repo" && CLAUDE_CODE_SESSION_ID=ev bash "$SCRIPTS/setup.sh" --session 2>&1 | ev_t | grep -c 'checks  *bash tests/run.sh passed T ago, 2 files changed since')"
+  is "check note: the report as JSON" "bash tests/run.sh ok 2" \
+    "$(cd "$ev_repo" && CLAUDE_CODE_SESSION_ID=ev bash "$SCRIPTS/setup.sh" --session --json | jq -r '.checks[] | "\(.key) \(.outcome) \(.changed)"')"
+
+  # A check that failed and was not run again is worth saying with nothing changed.
+  ev_call 4000 'npm test' PostToolUseFailure >/dev/null
+  is "check note: a failed check not run since, newest first" \
+    "Before this commit: npm test failed T ago, not run since; bash tests/run.sh passed T ago, 2 files changed since." \
+    "$(ev_call 300 "$ev_commit" | ev_t)"
+  # npm test now predates the edits above, so it too has files changed since.
+  ev_age npm_test 1
+  ev_call 2024 'npx playwright test' PostToolUseFailure '{"tool_input":{"command":"npx playwright test","timeout":2000}}' >/dev/null
+  is "check note: a check stopped at its limit" \
+    "Before this commit: npx playwright test was stopped at its limit T ago, not run since; npm test failed T ago, 2 files changed since; bash tests/run.sh passed T ago, 2 files changed since." \
+    "$(ev_call 300 "$ev_commit" | ev_t)"
+  ev_age npx_playwright_test 1; ev_age npm_test 2
+  ev_call 3000 'shellcheck' PostToolUseFailure >/dev/null
+  is "check note: three at most, the newest" "3" "$(ev_call 300 "$ev_commit" | tr ';' '\n' | grep -c .)"
+  lacks "check note: the oldest gives way" "bash tests/run.sh" "$(ev_call 300 "$ev_commit")"
+  # Run again and passing, with nothing touched after: all is as it was checked.
+  for ev_cmd in 'npm test' 'npx playwright test' 'shellcheck' 'bash tests/run.sh'; do ev_call 4000 "$ev_cmd" >/dev/null; done
+  is "check note: every check rerun and passing says nothing" "" "$(ev_call 300 "$ev_commit")"
+  contains "check note: the report still lists a fresh check" "nothing changed since" \
+    "$(cd "$ev_repo" && CLAUDE_CODE_SESSION_ID=ev bash "$SCRIPTS/setup.sh" --session 2>&1)"
+
+  fresh; ev_old; ev_prompt
+  ev_call 5000 'npm test' >/dev/null; ev_age npm_test 5; : > "$ev_repo/src/b.txt"
+  is "check note: one file is one file" "Before this commit: npm test passed T ago, 1 file changed since." "$(ev_call 300 "$ev_commit" | ev_t)"
+  ev_call 5000 'make' >/dev/null
+  refutes "check note: a command that is no check is not recorded" test -e "$(ev_mark make)"
+  ev_call 5000 'pytest' PostToolUse '{"tool_input":{"command":"pytest","run_in_background":true}}' >/dev/null
+  refutes "check note: a background check is not recorded" test -e "$(ev_mark pytest)"
+  is "check note: a subagent that commits is told" "Before this commit: npm test passed T ago, 1 file changed since." \
+    "$(ev_call 300 "$ev_commit" PostToolUse '{"agent_id":"sub1"}' | ev_t)"
+
+  # Outside a repository there is no telling what changed, so a pass is not
+  # mentioned; a failure still is.
+  mkdir -p "$WORK/proj-n"
+  ev_plain() {
+    jq -cn --argjson ms "$1" --arg c "$2" --arg ev "${3:-PostToolUse}" --arg cwd "$WORK/proj-n" \
+      '{session_id: "ev", cwd: $cwd, tool_name: "Bash", hook_event_name: $ev, duration_ms: $ms, tool_input: {command: $c}}' \
+      | GIT_CEILING_DIRECTORIES="$WORK" bash "$SCRIPTS/post-tool-use.sh" | jq -r '.hookSpecificOutput.additionalContext // ""'
+  }
+  is "check note: no repository, a pass is not mentioned" "" "$(ev_plain 300 "$ev_commit")"
+  ev_plain 4000 'pytest' PostToolUseFailure >/dev/null
+  is "check note: no repository, a failure still is" "Before this commit: pytest failed T ago, not run since." "$(ev_plain 300 "$ev_commit" | ev_t)"
+
+  for ev_conf in 'CHECK_NOTE=off' 'INJECT_CONTEXT=false' 'ENABLED=off'; do
+    fresh "$ev_conf"; ev_old; ev_prompt
+    ev_call 5000 'npm test' PostToolUseFailure >/dev/null
+    is "check note: $ev_conf says nothing" "" "$(ev_call 300 "$ev_commit")"
+  done
+  fresh 'CHECK_NOTE=off'; ev_prompt; ev_call 5000 'npm test' >/dev/null
+  refutes "check note: CHECK_NOTE=off records nothing" test -e "$(ev_mark npm_test)"
+  fresh 'SUBAGENTS=off'; ev_old; ev_prompt
+  ev_call 5000 'npm test' PostToolUseFailure >/dev/null
+  is "check note: SUBAGENTS=off sends a subagent no note" "" "$(ev_call 300 "$ev_commit" PostToolUse '{"agent_id":"sub1"}')"
+  contains "check note: the main conversation still gets it" "npm test failed" "$(ev_call 300 "$ev_commit")"
+  # On its own it keeps the tool hook awake, with every other tool feature off.
+  fresh 'HEARTBEAT_AFTER=0' 'SLOW_TOOL_AFTER=0' 'COMMAND_MEMORY=off'; ev_old; ev_prompt
+  asserts "check note: on its own it opens the gate" test -e "$(ct_state_file ev).timing-on"
+  ev_call 5000 'npm test' PostToolUseFailure >/dev/null
+  contains "check note: works with every other tool feature off" "npm test failed" "$(ev_call 300 "$ev_commit")"
+  # The records go when the session does.
+  ct_clear_state "ev"
+  refutes "check note: cleared with the session" test -e "$(ev_mark npm_test)"
+else
+  skip "check note" "jq or git is not installed"
+fi
+
+echo
+echo "checks: the setting"
+
+fresh
+ct_load_config
+is "check setting: on by default" "on" "$CT_CHECK_NOTE"
+bash "$SCRIPTS/setup.sh" --check-note=off >/dev/null 2>&1
+ct_load_config
+is "check setting: --check-note=off writes it" "off" "$CT_CHECK_NOTE"
+contains "check setting: --show lists it" "Check note      off" "$(bash "$SCRIPTS/setup.sh" --show)"
+refutes "check setting: a value that is not on or off is refused" bash "$SCRIPTS/setup.sh" --check-note=maybe
 fresh
 
 echo

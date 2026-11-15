@@ -58,10 +58,10 @@ command -v jq >/dev/null 2>&1 || exit 0
 # timeout reports that it fired. Where the limit is not one this hook can
 # name, the call's own duration is it. All of it needs duration_ms, which
 # Codex does not send: there a stopped call stays a failed one.
-IFS=$'\x1f' read -r session_id tool_name event ms tool_use_id agent_id outcome cmd_key background stop_ms <<< "$(jq -r \
+IFS=$'\x1f' read -r session_id tool_name event ms tool_use_id agent_id outcome cmd_key background stop_ms publish cwd <<< "$(jq -r \
   "$CT_JQ_CMDKEY"'
   (.tool_input | if type == "object" then . else {} end) as $ti
-  | (if .tool_name == "Bash" then ($ti.command // "" | ct_cmdparse) else {key: "", timeout: false} end) as $c
+  | (if .tool_name == "Bash" then ($ti.command // "" | ct_cmdparse) else {key: "", timeout: false, publish: ""} end) as $c
   | (if .hook_event_name == "PostToolUseFailure" or .error != null or .success == false or .status == "error" or .status == "failed" or (.tool_response | if type == "object" then .error != null else false end) then "fail" else "ok" end) as $o
   | ($ti | ct_bash_limit) as $lim
   | (.error | if type == "string" then . else "" end) as $e
@@ -72,7 +72,8 @@ IFS=$'\x1f' read -r session_id tool_name event ms tool_use_id agent_id outcome c
      else null end) as $stop
   | [(.session_id // "-"), (.tool_name // ""), (.hook_event_name // ""), (.duration_ms // "" | tostring), (.tool_use_id // ""), (.agent_id // ""),
     $o, $c.key, ($ti.run_in_background // false | tostring),
-    (if $stop == null then "" else ($stop | floor | tostring) end)] | join("\u001f")')"
+    (if $stop == null then "" else ($stop | floor | tostring) end),
+    $c.publish, (.cwd // "" | if type == "string" then . else "" end)] | join("\u001f")')"
 
 # The prompt hook resolved the settings against the payload's cwd and left
 # them here, so this hook honours the same project config the marker does
@@ -220,6 +221,28 @@ if [ -z "$agent_id" ] || [ "$subagent_notes" = "on" ]; then
     fi
   fi
   note="$_CT_NOTE"
+fi
+# Checks, and what became of them. A check that finishes is recorded; a
+# commit, a push or a pull request that went through is the moment to say
+# which checks did not pass or have had files change since. Both need the
+# call to have run here and finished: a background call has done neither.
+if [ "$tool_name" = "Bash" ] && [ -n "$ms" ] && [ "$background" != "true" ]; then
+  ct_read_flag_var "$session_id" "checknote"
+  if [ "$_CT_FLAG" = "on" ]; then
+    if [ -n "$cmd_key" ] && ct_is_check_key "$cmd_key"; then
+      ct_epoch_var
+      ck_outcome="$outcome"
+      [ -z "$stop_ms" ] || ck_outcome="limit"
+      # shellcheck disable=SC2153  # _CT_NOW is assigned by ct_epoch_var (lib/state.sh)
+      ct_check_record "$session_id" "$cmd_key" "$ck_outcome" "$_CT_NOW" || :
+    fi
+    if [ -n "$publish" ] && [ "$outcome" = "ok" ] \
+       && { [ -z "$agent_id" ] || [ "$subagent_notes" = "on" ]; }; then
+      ct_epoch_var
+      ct_check_note_var "$session_id" "$cwd" "$publish" "$_CT_NOW" || :
+      [ -n "$_CT_NOTE" ] && note="${note:+$note }$_CT_NOTE"
+    fi
+  fi
 fi
 if [ -z "$agent_id" ]; then
   ct_read_flag_var "$session_id" "heartbeat"; hb_every="$_CT_FLAG"

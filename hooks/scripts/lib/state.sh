@@ -61,9 +61,12 @@
 # when the first line opens one (<<); otherwise they are a script whose other
 # commands were never looked at, and the call has no key.
 #
-# ct_cmdparse gives {key, timeout}: the key, and whether a command on the
-# line ran under timeout(1), which post-tool-use.sh needs to tell a limit
-# that fired (exit 124) from a failure. ct_cmdkey is the key alone.
+# ct_cmdparse gives {key, timeout, publish}: the key; whether a command on
+# the line ran under timeout(1), which post-tool-use.sh needs to tell a limit
+# that fired (exit 124) from a failure; and "commit", "push" or "pull
+# request" when the line hands work on to others (the last such piece wins),
+# which is when the checks behind that work are worth a look. A chain has no
+# key and can still publish. ct_cmdkey is the key alone.
 # shellcheck disable=SC2016,SC2034  # jq source, not shell; read by the hooks that source this file
 CT_JQ_CMDKEY='def ct_cmdparse:
   def unquote:
@@ -114,12 +117,26 @@ CT_JQ_CMDKEY='def ct_cmdparse:
   def ignored: . as $w | ["cd", "pushd", "popd", "export", "set", "unset", "source", ".", "echo", "printf", "true", ":", "exit"] | index($w) != null;
   def control: . as $w | ["until", "while", "for", "do", "done", "if", "then", "else", "elif", "fi", "case", "esac"] | index($w) != null;
   def take: if length == 0 or (.[0] | stops) then [] else [.[0]] + (.[1:] | take) end;
+  # What a piece hands on to others, if anything: a commit, a push, or a
+  # pull request opened or merged.
+  # The git subcommand: the first word after git that is not one of its own
+  # options, two of which (-c, -C) take a value as a word of their own.
+  def gitsub:
+    if length == 0 then ""
+    elif .[0] == "-c" or .[0] == "-C" then .[2:] | gitsub
+    elif (.[0] | startswith("-")) then .[1:] | gitsub
+    else .[0] end;
+  def publish:
+    (.[0] // "" | base) as $prog
+    | if $prog == "git" then (.[1:] | gitsub) as $sub | (if $sub == "commit" or $sub == "push" then $sub else "" end)
+      elif $prog == "gh" and .[1] == "pr" and (.[2] == "create" or .[2] == "merge") then "pull request"
+      else "" end;
   # One piece of the line: {k: "i"} ignored, {k: "c"} control, or
   # {k: "r", key: ...} a real command, its key empty when it cannot be keyed.
-  # t says whether the piece ran under timeout.
+  # t says whether the piece ran under timeout, p what it published.
   def piece:
     ((split("|") | .[0]) // "") | words | .[0:40] | wrapped as $t | strip
-    | {t: $t} + if length == 0 then {k: "i"}
+    | {t: $t, p: publish} + if length == 0 then {k: "i"}
       else (.[0] | base) as $prog
         | if ($prog | ignored) then {k: "i"}
           elif ($prog | control) then {k: "c"}
@@ -128,16 +145,17 @@ CT_JQ_CMDKEY='def ct_cmdparse:
           else {k: "r", key: (([$prog] + (.[1:3] | take)) | join(" ") | .[0:60])} end
       end;
   def blank: explode | all(.[]; . == 32 or . == 9 or . == 13);
-  if type != "string" then {key: "", timeout: false} else
+  if type != "string" then {key: "", timeout: false, publish: ""} else
     split("\n") as $lines
     | ($lines[0] // "") as $first
-    | if ($lines[1:] | any(.[]; blank | not)) and ($first | contains("<<") | not) then {key: "", timeout: false}
+    | if ($lines[1:] | any(.[]; blank | not)) and ($first | contains("<<") | not) then {key: "", timeout: false, publish: ""}
       else
         $first | unquote | split("\t") | join(" ")
         | [splitall(["&&", "||", ";"])[] | select(words | length > 0) | piece]
         | {key: (if any(.[]; .k == "c") then ""
                  else map(select(.k == "r")) | if length == 1 then .[0].key else "" end end),
-           timeout: any(.[]; .t)}
+           timeout: any(.[]; .t),
+           publish: ((map(.p | select(. != "")) | last) // "")}
       end
   end;
 def ct_cmdkey: ct_cmdparse | .key;
@@ -1061,6 +1079,150 @@ ct_command_stats() {
         printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id, m, med, last, fails, stopped, lim, max
       }
     }' "$file" | sort -t "$(printf '\t')" -k"$col","$col"nr
+  return 0
+}
+
+# Whether a command key names a check: something run to learn whether the
+# work is sound. By the words in the key, since nothing else is known about
+# it: a short list of what tests, linters, type checkers and builds are
+# called, and never a program that only reads or moves things, whose
+# arguments can carry the same words (cat tests/run.sh, git checkout tests).
+#
+# The list decides what is tracked, not what is claimed. What Claude is told
+# about a check is when it ran and how it ended, which is true of any command.
+ct_is_check_key() {
+  local key="${1:-}" word
+  [ -n "$key" ] || return 1
+  case "${key%% *}" in
+    git|gh|ls|cat|grep|rg|find|sed|awk|head|tail|rm|mv|cp|mkdir|touch|chmod|wc|diff|sort|jq|curl|cd|echo|printf|less|which|man|open|code|vim|nano)
+      return 1 ;;
+  esac
+  # Every character that is not a letter or a digit becomes a space, so the
+  # unquoted expansion below splits into words and can glob nothing.
+  # shellcheck disable=SC2086
+  for word in ${key//[^A-Za-z0-9]/ }; do
+    case "$word" in
+      test|tests|testing|spec|specs|check|checks|lint|typecheck|tsc|build|verify|vet|e2e|pytest|jest|vitest|mocha|rspec|phpunit|shellcheck|eslint|ruff|mypy|phpstan|clippy|tox|nox|ctest|playwright|cypress|flake8|pylint|rubocop|stylelint)
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Record that a check finished.
+#   $1 session id   $2 command key   $3 ok|fail|limit   $4 now (epoch)
+# One file per check, <state>.chk-<key>, holding the time, the outcome and
+# the key. Its modification time is the moment the check ended, which is
+# what ct_checks_rows compares the work tree against. Rewritten whole on
+# every run, so the latest run of a check is the one that counts.
+ct_check_record() {
+  local sid="${1:-}" key="${2:-}" outcome="${3:-}" now="${4:-}" name
+  [ -n "$key" ] || return 0
+  case "$outcome" in ok|fail|limit) ;; *) return 0 ;; esac
+  case "$now" in ''|*[!0-9]*) return 0 ;; esac
+  ct_state_ready && ct_state_file_var "$sid" || return 0
+  name="${key//[^A-Za-z0-9]/_}"
+  printf '%s\t%s\t%s\n' "$now" "$outcome" "$key" > "${_CT_STATE_FILE}.chk-${name:0:80}" 2>/dev/null || :
+  return 0
+}
+
+# The checks of a session, one per line: epoch, outcome, files changed since,
+# key, tab-separated, in no particular order.
+#   $1 the session's state file (ct_state_file)   $2 a directory in the work tree
+#
+# "Changed since" counts the files Git knows or would add, tracked and
+# untracked and not ignored, that are newer than the check's record. By
+# modification time, so an edit made by a tool, a shell command or the
+# person's own editor all count, and a commit made in between changes
+# nothing. It is a dash, for unknown (an empty field would vanish when the
+# line is read back on tabs), outside a repository, without git, or in
+# a work tree of more than 20,000 files, where the walk would cost more than
+# the answer is worth to a hook.
+ct_checks_rows() {
+  local base="${1:-}" cwd="${2:-}" f line top="" seen=0 i
+  local marks=() recs=() changed=()
+  [ -n "$base" ] || return 0
+  for f in "$base".chk-*; do
+    [ -f "$f" ] || continue
+    line=""
+    IFS= read -r line < "$f" || :
+    case "$line" in
+      [0-9]*$'\t'ok$'\t'?*|[0-9]*$'\t'fail$'\t'?*|[0-9]*$'\t'limit$'\t'?*) ;;
+      *) continue ;;
+    esac
+    case "${line%%$'\t'*}" in *[!0-9]*) continue ;; esac
+    marks[${#marks[@]}]="$f"; recs[${#recs[@]}]="$line"; changed[${#changed[@]}]=0
+    [ "${#marks[@]}" -lt 12 ] || break
+  done
+  [ "${#marks[@]}" -gt 0 ] || return 0
+  if [ -n "$cwd" ] && command -v git >/dev/null 2>&1; then
+    top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)" || top=""
+  fi
+  if [ -n "$top" ]; then
+    while IFS= read -r -d '' f; do
+      seen=$(( seen + 1 ))
+      if [ "$seen" -gt 20000 ]; then top=""; break; fi
+      for i in "${!marks[@]}"; do
+        if [ "$top/$f" -nt "${marks[$i]}" ]; then changed[$i]=$(( ${changed[$i]} + 1 )); fi
+      done
+    done < <(git -C "$top" ls-files -co --exclude-standard -z 2>/dev/null)
+  fi
+  for i in "${!marks[@]}"; do
+    line="${recs[$i]}"
+    f="${line#*$'\t'}"
+    if [ -n "$top" ]; then
+      printf '%s\t%s\t%s\t%s\n' "${line%%$'\t'*}" "${f%%$'\t'*}" "${changed[$i]}" "${f#*$'\t'}"
+    else
+      printf '%s\t%s\t-\t%s\n' "${line%%$'\t'*}" "${f%%$'\t'*}" "${f#*$'\t'}"
+    fi
+  done
+  return 0
+}
+
+# What one row of ct_checks_rows says, into _CT_CHECK: "bash tests/run.sh
+# passed 48m12s ago, 9 files changed since". _CT_CHECK_STALE is 1 when it is
+# worth raising unasked: the check did not pass, or files changed after it.
+#   $1 epoch   $2 outcome   $3 files changed, or - for unknown   $4 key   $5 now
+ct_check_clause_var() {
+  local at="${1:-}" outcome="${2:-}" n="${3:-}" key="${4:-}" now="${5:-}" how age since
+  _CT_CHECK=""; _CT_CHECK_STALE=0
+  case "$at" in ''|*[!0-9]*) return 0 ;; esac
+  case "$now" in ''|*[!0-9]*) return 0 ;; esac
+  case "$outcome" in
+    ok) how="passed" ;;
+    fail) how="failed"; _CT_CHECK_STALE=1 ;;
+    limit) how="was stopped at its limit"; _CT_CHECK_STALE=1 ;;
+    *) return 0 ;;
+  esac
+  age=$(( now - at )); [ "$age" -ge 0 ] || age=0
+  case "$n" in
+    ''|*[!0-9]*) since="" ; [ "$outcome" = "ok" ] || since=", not run since" ;;
+    0) if [ "$outcome" = "ok" ]; then since=", nothing changed since"; else since=", not run since"; fi ;;
+    1) since=", 1 file changed since"; _CT_CHECK_STALE=1 ;;
+    *) since=", $n files changed since"; _CT_CHECK_STALE=1 ;;
+  esac
+  _CT_CHECK="$key $how $(ct_format_duration "$age") ago$since"
+}
+
+# The sentence the tool hook adds after a commit, a push or a pull request,
+# or nothing: the checks of this session that did not pass or have files
+# changed since, newest first, three at most. A fact; whether the changes
+# matter to the check is Claude's to judge.
+#   $1 session id   $2 the call's cwd   $3 commit|push|pull request   $4 now
+# Assigns _CT_NOTE.
+ct_check_note_var() {
+  local sid="${1:-}" cwd="${2:-}" what="${3:-}" now="${4:-}" at outcome n key list="" count=0
+  _CT_NOTE=""
+  [ -n "$what" ] || return 0
+  ct_state_file_var "$sid" || return 0
+  while IFS=$'\t' read -r at outcome n key; do
+    ct_check_clause_var "$at" "$outcome" "$n" "$key" "$now"
+    [ "$_CT_CHECK_STALE" = "1" ] && [ -n "$_CT_CHECK" ] || continue
+    list="${list:+$list; }$_CT_CHECK"
+    count=$(( count + 1 ))
+    [ "$count" -lt 3 ] || break
+  done < <(ct_checks_rows "$_CT_STATE_FILE" "$cwd" | sort -t "$(printf '\t')" -k1,1nr)
+  [ -z "$list" ] || _CT_NOTE="Before this $what: $list."
   return 0
 }
 

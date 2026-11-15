@@ -100,10 +100,11 @@ Flags
                               history row. Off by default. Never a path.
   --tool-timing=on|off        Record what each tool call cost and report the
                               slowest in the session summary. Off by default.
-                              It, --heartbeat-after, --slow-tool-after and
-                              --command-memory cost a few milliseconds per tool
-                              call rather than per message; off, 0, 0 and off
-                              together bring back the free path.
+                              It, --heartbeat-after, --slow-tool-after,
+                              --command-memory and --check-note cost a few
+                              milliseconds per tool call rather than per
+                              message; off, 0, 0, off and off together bring
+                              back the free path.
   --inject-context=true|false Tell Claude the time each prompt was sent. false
                               also silences the heartbeat, slow tool, slow
                               commands, resumption and time-awareness pointer
@@ -119,6 +120,9 @@ Flags
   --raise-limit=on|off        Raise a Bash call's time limit before it runs,
                               when the command memory says it would be
                               stopped, and tell Claude. Needs --command-memory.
+  --check-note=on|off         Tell Claude, after a commit, a push or a pull
+                              request, which checks it ran this session
+                              failed or have had files change since.
   --live=on|off               Claude Code only: a ticking turn clock in the
                               footer, and a slow tool's time while it runs.
   --enabled=on|off            Master switch. off silences every hook without
@@ -189,6 +193,7 @@ slow-tool-after SLOW_TOOL_AFTER CT_SLOW_TOOL_AFTER  ct_is_seconds           -   
 resume-note     RESUME_NOTE     CT_RESUME_NOTE      ct_is_onoff             -        ignore
 command-memory  COMMAND_MEMORY  CT_COMMAND_MEMORY   ct_is_onoff             -        ignore
 raise-limit     RAISE_LIMIT     CT_RAISE_LIMIT      ct_is_onoff             -        ignore
+check-note      CHECK_NOTE      CT_CHECK_NOTE       ct_is_onoff             -        ignore
 live            LIVE            CT_LIVE             ct_is_onoff             -        ignore
 "
 
@@ -813,6 +818,15 @@ session_report() {
   else
     echo "  tool timing     off; turn it on with /timestamps:configure to see which tools took longest"
   fi
+  # Every check of the session, the fresh ones too: this is where to look
+  # before saying the work is verified, with or without a commit.
+  local at outcome n key label="checks"
+  while IFS=$'\t' read -r at outcome n key; do
+    ct_check_clause_var "$at" "$outcome" "$n" "$key" "$now"
+    [ -n "$_CT_CHECK" ] || continue
+    printf '  %-15s %s\n' "$label" "$_CT_CHECK"
+    label=""
+  done < <(ct_checks_rows "$base" "$PWD" | sort -t "$(printf '\t')" -k1,1nr)
   return 0
 }
 
@@ -871,7 +885,7 @@ _ct_turns_json() {
 }
 
 _ct_session_json() {
-  local base="$1" now="$2" timing="$3" turns current="null" start secs slowest
+  local base="$1" now="$2" timing="$3" turns current="null" start secs slowest checks
   command -v jq >/dev/null 2>&1 || { echo "--json needs jq." >&2; return 2; }
   turns="$(_ct_turns_json "$base" "$now")" || turns='[]'
   if [ ! -e "${base}.closed" ]; then
@@ -888,7 +902,12 @@ _ct_session_json() {
       [split("\n")[] | select(length > 0) | split("\t")
        | {tool: .[1], secs: (((.[0] | tonumber) * 10 + 0.5 | floor) / 10), calls: (.[2] | tonumber)}]')" || slowest="[]"
   fi
-  jq -n --argjson start "$_CT_START" --arg start_local "$(ct_format_epoch "$_CT_START" '%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)" \
+  # changed is null where it is unknown: outside a repository, or a work
+  # tree too large to walk.
+  checks="$(ct_checks_rows "$base" "$PWD" | sort -t "$(printf '\t')" -k1,1nr | jq -R -s -c '
+    [split("\n")[] | select(length > 0) | split("\t")
+     | {key: .[3], outcome: .[1], at: (.[0] | tonumber), changed: (if .[2] == "-" then null else (.[2] | tonumber) end)}]')" || checks="[]"
+  jq -n --argjson checks "${checks:-[]}" --argjson start "$_CT_START" --arg start_local "$(ct_format_epoch "$_CT_START" '%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)" \
      --argjson now "$now" --argjson turn_count "$_CT_TURNS" --argjson waiting "$_CT_WAIT" \
      --argjson away "$_CT_IDLE" --argjson current "$current" --arg timing "$timing" \
      --argjson slowest "$slowest" --argjson turns "$turns" '
@@ -898,6 +917,7 @@ _ct_session_json() {
      turn_count: $turn_count, waiting: $waiting, away: $away,
      current_turn: $current, tool_timing: ($timing == "on"),
      slowest_tools: $slowest,
+     checks: $checks,
      turns: $turns}'
 }
 
@@ -1163,6 +1183,7 @@ doctor() {
   fi
   echo "  command memory  $CT_COMMAND_MEMORY, $cm_runs runs recorded, $cm_write"
   echo "  raise limit     $CT_RAISE_LIMIT"
+  echo "  check note      $CT_CHECK_NOTE"
   echo
 
   echo "State"
@@ -1305,10 +1326,10 @@ SUMMARY=$CT_SUMMARY
 SUBAGENTS=$CT_SUBAGENTS
 
 # Record what each tool call cost and name the slowest in the session summary.
-# This, HEARTBEAT_AFTER, SLOW_TOOL_AFTER and COMMAND_MEMORY cost a few
-# milliseconds per tool call rather than per message; HEARTBEAT_AFTER=0,
-# SLOW_TOOL_AFTER=0, COMMAND_MEMORY=off and TOOL_TIMING=off together bring
-# back the free path.
+# This, HEARTBEAT_AFTER, SLOW_TOOL_AFTER, COMMAND_MEMORY and CHECK_NOTE cost
+# a few milliseconds per tool call rather than per message; HEARTBEAT_AFTER=0,
+# SLOW_TOOL_AFTER=0, COMMAND_MEMORY=off, CHECK_NOTE=off and TOOL_TIMING=off
+# together bring back the free path.
 TOOL_TIMING=$CT_TOOL_TIMING
 
 # Record each finished session, and how many to keep. Timings only: no message
@@ -1344,6 +1365,11 @@ COMMAND_MEMORY=$CT_COMMAND_MEMORY
 # limit, never approves a call. Needs COMMAND_MEMORY, and INJECT_CONTEXT=false
 # switches it off as well.
 RAISE_LIMIT=$CT_RAISE_LIMIT
+
+# Keep track of the checks Claude runs (tests, linters, builds, by the words
+# in the command) and tell it, after a commit, a push or a pull request,
+# which of them failed or have had files change since they ran.
+CHECK_NOTE=$CT_CHECK_NOTE
 
 # Claude Code only: a ticking turn clock in the footer, and a slow tool's time
 # while it runs past its usual time. Display only.
@@ -1556,6 +1582,7 @@ show_config() {
   echo "  Resume note     $CT_RESUME_NOTE"
   echo "  Command memory  $CT_COMMAND_MEMORY"
   echo "  Raise limit     $CT_RAISE_LIMIT"
+  echo "  Check note      $CT_CHECK_NOTE"
   echo "  Live layer      $CT_LIVE"
   echo
   echo -n "  Preview         "; preview

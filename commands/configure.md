@@ -142,6 +142,7 @@ Some phrasings and what they mean:
 | "don't tell Claude when I last worked here" | `RESUME_NOTE=off` |
 | "don't remember how long my commands take" | `COMMAND_MEMORY=off` |
 | "don't change my commands' time limits" | `RAISE_LIMIT=off` |
+| "don't tell Claude about stale test runs" | `CHECK_NOTE=off` |
 | "no live clock", "hide the running-tool band" | `LIVE=off` |
 | "highlight slow turns after 30s" | `SLOW_AFTER=30` |
 | "time my tools" | `TOOL_TIMING=on` |

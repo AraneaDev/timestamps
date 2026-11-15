@@ -53,6 +53,11 @@ bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/setup.sh" --turns
 bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/setup.sh" --session --json
 ```
 
+`--session` also lists the checks run in the session, newest first: when each
+ran, how it ended, and how many files in the work tree have changed since.
+`--session --json` carries them as `checks`, with `changed` null where it is
+not known.
+
 `--commands` shows what the duration memory knows: how long each Bash command
 usually takes in this project, from its last 20 runs, how many of them failed
 and how many were stopped at their time limit. A stopped run is counted in its
