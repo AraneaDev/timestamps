@@ -7860,7 +7860,7 @@ if command -v jq >/dev/null 2>&1; then
   is "pane report: a call's fields" "134000 Bash bash tests/run.sh ok false" "$(pn_q '.calls[0] | "\(.ms) \(.tool) \(.key) \(.outcome) \(.subagent)"')"
   is "pane report: a call without a key has none" "null" "$(pn_q '.calls[1].key')"
   is "pane report: a call's end time is a number" "number" "$(pn_q '.calls[0].at | type')"
-  is "pane report: the command memory for this project" "bash tests/run.sh 4 133000" "$(pn_q '.commands[0] | "\(.key) \(.runs) \(.median_ms)"')"
+  is "pane report: the command memory for this project" "bash tests/run.sh 4 133500" "$(pn_q '.commands[0] | "\(.key) \(.runs) \(.median_ms)"')"
   is "pane report: what Claude was told, whole lines only" "slow" "$(pn_q '[.told[].kind] | join(" ")')"
   is "pane report: a note's text" "That Bash call took 2m14s (usually 2m13s)." "$(pn_q '.told[0].text')"
   is "pane report: past sessions, whole rows only" "2" "$(pn_q '.history | length')"
@@ -7870,7 +7870,8 @@ if command -v jq >/dev/null 2>&1; then
   is "pane report: the settings the pane draws by" "60 on on on" \
     "$(pn_q '.settings | "\(.slow_tool_after) \(.command_memory) \(.raise_limit) \(.check_note)"')"
   is "pane report: the time it was made" "number" "$(pn_q '.now | type')"
-  is "pane report: checks are there, empty when none ran" "0" "$(pn_q '.session.checks | length')"
+  # bash tests/run.sh is a check by its name, so the slow call above is one.
+  is "pane report: the checks of the session" "bash tests/run.sh ok" "$(pn_q '.session.checks[] | "\(.key) \(.outcome)"')"
 
   pn_json="$(cd "$WORK/proj-p" && CLAUDE_CODE_SESSION_ID=never-seen bash "$SCRIPTS/setup.sh" --pane 2>/dev/null)"; pn_rc=$?
   is "pane report: a session with no record still reports, without one" "0 null 2" "$pn_rc $(pn_q '.session') $(pn_q '.history | length')"

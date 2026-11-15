@@ -130,8 +130,9 @@ export function bar(fraction: number, size: number, color: string): Segment[] {
 
 /**
  * A stacked bar `size` cells long: each part its share of the whole in its
- * colour, largest remainders rounding up so the cells add up to exactly
- * `size`, and a part above nothing never rounded away while room is left.
+ * colour, the cells adding up to exactly `size`. A part above nothing is
+ * never rounded away while there are cells to go round: it takes one from
+ * the largest.
  * A part without a colour is the remainder, drawn as a dim shade.
  */
 export function stacked(parts: readonly { value: number; color?: string }[], size: number): Segment[] {
@@ -139,16 +140,21 @@ export function stacked(parts: readonly { value: number; color?: string }[], siz
   if (size <= 0) return []
   if (total <= 0) return [{ text: '░'.repeat(size), dim: true }]
   const exact = parts.map(p => (Math.max(0, p.value) / total) * size)
-  const share = exact.map(Math.floor)
-  let left = size - share.reduce((a, b) => a + b, 0)
-  // Parts that would vanish come first, then the largest remainders.
-  const order = exact
-    .map((x, i) => ({ i, lost: share[i] === 0 && x > 0, rest: x - Math.floor(x) }))
-    .sort((a, b) => Number(b.lost) - Number(a.lost) || b.rest - a.rest)
-  for (const { i } of order) {
-    if (left <= 0) break
+  // Every part above nothing gets a cell while there are cells to go round.
+  const positive = exact.filter(x => x > 0).length
+  const share = exact.map(x => (x > 0 && positive <= size ? Math.max(1, Math.floor(x)) : Math.floor(x)))
+  let sum = share.reduce((a, b) => a + b, 0)
+  // Too many: the largest gives a cell back. Too few: the largest remainder takes one.
+  while (sum > size) {
+    const most = share.indexOf(Math.max(...share))
+    share[most] = (share[most] ?? 0) - 1
+    sum -= 1
+  }
+  const byRemainder = exact.map((x, i) => ({ i, rest: x - Math.floor(x) })).sort((a, b) => b.rest - a.rest)
+  for (let k = 0; sum < size; k++) {
+    const i = byRemainder[k % byRemainder.length]?.i ?? 0
     share[i] = (share[i] ?? 0) + 1
-    left -= 1
+    sum += 1
   }
   const out: Segment[] = []
   parts.forEach((p, i) => {

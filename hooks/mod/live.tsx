@@ -3,12 +3,15 @@
 // records. What a drawing reads is in $.state, so a hot reload keeps it.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
-import type { LiveCall, TimelineView } from '../../types'
-import { readBashState, readCommandsFile, readTimelineFiles } from './bash-state.ts'
+import type { LiveCall, PaneData, PaneTab, PaneView } from '../../types'
+import { readBashState, readCommandsFile } from './bash-state.ts'
 import type { BashState, Host } from './bash-state.ts'
 import { cmdKey } from './cmdkey.ts'
 import { formatDuration } from './format.ts'
-import { buildTimeline, clockOf, timelineLines } from './timeline.ts'
+import { parsePane } from './pane-data.ts'
+import { clockOf, markerOfTurn, paneLayout, TABS } from './pane-views.ts'
+import type { Target } from './pane-views.ts'
+import type { Row, Segment } from './rows.ts'
 import { usualSeconds } from './usual.ts'
 
 export const running = atom({ plugin: 'timestamps', key: 'running' } as const, [] as LiveCall[])
@@ -21,13 +24,16 @@ export const sessionStartedAt = atom(
   null as number | null,
 )
 
-// The timeline pane: null until the person first asks for it, so a session
-// that never opens it reads nothing for it.
-export const timeline = atom({ plugin: 'timestamps', key: 'timeline' } as const, null as TimelineView | null)
-export const isTimelineByTime = atom({ plugin: 'timestamps', key: 'isTimelineByTime' } as const, false)
+// The /timestamps pane: null until the person first opens it, so a session
+// that never does reads nothing for it.
+export const pane = atom({ plugin: 'timestamps', key: 'pane' } as const, null as PaneData | null)
+export const paneView = atom({ plugin: 'timestamps', key: 'paneView' } as const, { tab: 'overview', marker: 0, isByTime: false } as PaneView)
 
-const TIMELINE = 'timestamps-timeline'
-const TIMELINE_TITLE = 'Timeline'
+const PANE = 'timestamps'
+const PANE_TITLE = 'Timestamps'
+const PANE_COLUMNS = 128
+// While a turn runs and the pane is open, it is read again this often.
+const PANE_EVERY_TICKS = 5
 const TICK_MS = 1000
 const MIN_BAND_S = 10
 const USUAL_FACTOR = 1.5
@@ -108,8 +114,15 @@ async function paint($: EngineInterface, isCurrent: () => boolean = () => true):
 
 function startTicking($: EngineInterface): void {
   ticker?.cancel()
+  let ticks = 0
   const mine: Timer = $.clock.every(TICK_MS, () => {
     paint($, () => ticker === mine).catch(() => undefined)
+    ticks += 1
+    if (ticks % PANE_EVERY_TICKS === 0) {
+      isPaneOpen($)
+        .then(isOpen => (isOpen ? loadPane($) : false))
+        .catch(() => undefined)
+    }
   })
   ticker = mine
 }
@@ -119,26 +132,67 @@ function stopTicking(): void {
   ticker = undefined
 }
 
-// Read what bash recorded for this session and keep it for the pane. Bash
-// measures; this only arranges. Returns whether there was anything to read.
-async function loadTimeline($: EngineInterface): Promise<boolean> {
-  const host = hostOf($)
-  const files = await readTimelineFiles(host)
-  if (files === undefined) {
-    await update($, timeline, () => null)
+// Ask bash for everything the pane draws, and keep it. Bash measured and
+// recorded all of it: this is one run of the plugin's own report, the same
+// one a person can run. Returns whether there was an answer.
+async function loadPane($: EngineInterface): Promise<boolean> {
+  try {
+    const sid = await $.session.id()
+    const ran = await $.process.run(['bash', `${$.plugin.root}/hooks/scripts/setup.sh`, '--pane'], {
+      env: { CLAUDE_CODE_SESSION_ID: sid },
+      timeoutMs: 10_000,
+    })
+    const data = ran.exitCode === 0 ? parsePane(ran.stdout) : undefined
+    if (data === undefined) return false
+    await update($, pane, () => data)
+    return true
+  } catch {
     return false
   }
-  const project = files.project
-  const tsv = files.isCommandMemoryOn && project !== undefined ? await readCommandsFile(host) : ''
-  const usual = new Map<string, number | undefined>()
-  const usualOf = (key: string) => {
-    if (!usual.has(key)) usual.set(key, tsv === '' ? undefined : usualSeconds(tsv, project, key))
-    return usual.get(key)
+}
+
+const isPaneOpen = async ($: EngineInterface): Promise<boolean> => (await $.ui.panes()).some(p => p.id === PANE)
+
+// Transparent: the pane lies on the terminal's own background, as the
+// conversation beside it does. A build that does not take the colour gets
+// the pane without it.
+async function openPane($: EngineInterface): Promise<boolean> {
+  const args = { id: PANE, title: PANE_TITLE }
+  // Wide enough for a list and its detail side by side; the surface gives
+  // what it has, and the layout stacks them when that is less.
+  const opened = await $.ui.open({ ...args, backgroundColor: 'transparent', columns: PANE_COLUMNS }).catch(() => $.ui.open(args))
+  return opened.isPlaced
+}
+
+// What the last drawing laid out: how far the marker can go, and what the
+// marked row opens. Lost on a reload and set again by the next drawing.
+let drawn: { count: number; open?: Target } = { count: 0 }
+
+// A press, by the id of what was pressed: a tab, a key of the bar, reload.
+async function pressed($: EngineInterface, id: string): Promise<void> {
+  if (id === 'reload') {
+    await loadPane($)
+    return
   }
-  const now = Math.floor((await $.clock.now()) / 1000)
-  const built = buildTimeline(files.turnlog, files.calls, files.openStart, now, usualOf)
-  await update($, timeline, () => ({ turns: built.turns, tz: files.tz }))
-  return true
+  if (id.startsWith('tab-') || id.startsWith('key-')) {
+    const tab = TABS.find(t => t.id === id.slice(4))?.id
+    if (tab !== undefined) await update($, paneView, v => ({ ...v, tab, marker: 0 }))
+    return
+  }
+  if (id === 'order') {
+    await update($, paneView, v => ({ ...v, isByTime: !v.isByTime, marker: 0 }))
+    return
+  }
+  if (id === 'down' || id === 'up') {
+    const last = Math.max(0, drawn.count - 1)
+    await update($, paneView, v => ({ ...v, marker: Math.max(0, Math.min(last, Math.min(v.marker, last) + (id === 'down' ? 1 : -1))) }))
+    return
+  }
+  if (id === 'open' && drawn.open !== undefined) {
+    const data = await read($, pane)
+    const turn = drawn.open.turn
+    if (data !== null) await update($, paneView, v => ({ ...v, tab: 'turns' as PaneTab, marker: markerOfTurn(data, v.isByTime, turn) }))
+  }
 }
 
 let redraw: Timer | undefined
@@ -210,58 +264,95 @@ export function registerLive(on: On): void {
     // this environment's timers are new. Start them again.
     if ((await read($, turnStartedAt)) !== null) startTicking($)
     syncRedraw($, (await read($, running)).length > 0)
-    // A surface that refuses the command still gets its session.
+    // A surface that refuses the command still gets its session; the reason
+    // goes to the debug log, where "why is there no /timestamps" gets asked.
     await $.command
       .register({
         name: 'timestamps',
-        description: 'Where this session\'s time went, turn by turn',
-        argumentHint: '[longest]',
+        description: 'Where this session\'s time went: a dashboard, turn by turn',
+        argumentHint: '[turns|commands|checks|told|history]',
       })
-      .catch(err => $.ui.log('REGFAIL ' + String(err)))
+      .catch(err => $.ui.log(`/timestamps was not registered: ${String(err)}`))
     return next(e)
   })
 
-  // /timeline opens the pane on what bash has recorded so far; /timeline
-  // longest opens it with the longest turns first.
+  // /timestamps opens the pane and closes it again; /timestamps turns (or any
+  // tab's name, or the start of it) opens it on that tab.
   on('command.run', { command: 'timestamps' }, async ($, e) => {
     const wanted = e.args.trim().toLowerCase()
-    if (wanted !== '') await update($, isTimelineByTime, () => wanted.startsWith('long') || wanted === 'slow')
-    const hasState = await loadTimeline($)
-    if (!hasState) return { text: 'Timestamps has recorded nothing for this session yet.' }
-    const opened = await $.ui.open({ id: TIMELINE, title: TIMELINE_TITLE })
+    const tab = wanted === '' ? undefined : TABS.find(t => t.id === wanted || t.full.toLowerCase().startsWith(wanted))
+    if (wanted !== '' && tab === undefined) {
+      return { text: `No tab called "${wanted}". The tabs are ${TABS.map(t => t.id).join(', ')}.` }
+    }
+    if (tab === undefined && (await isPaneOpen($))) {
+      await $.ui.close({ id: PANE }).catch(() => undefined)
+      return { text: 'Timestamps pane closed.' }
+    }
+    if (tab !== undefined) await update($, paneView, v => ({ ...v, tab: tab.id, marker: 0 }))
+    if (!(await loadPane($))) return { text: 'Timestamps could not read this session. It needs jq; /timestamps:configure says what is missing.' }
     return {
-      text: opened.isPlaced
-        ? 'Timeline opened. Focus it with ctrl+x tab: s changes the order, r reads it again.'
-        : 'Timeline is ready and shows once there is room for a pane.',
+      text: (await openPane($))
+        ? 'Timestamps pane opened. ctrl+x tab gives it the keys.'
+        : 'Timestamps pane is ready and shows once there is room for it.',
     }
   })
 
-  on('ui.render', { component: 'Pane', requestId: TIMELINE }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const view = await read($, timeline)
-    if (view === null) return <Text dimColor>Run /timeline to read this session.</Text>
-    const byTime = await read($, isTimelineByTime)
-    const lines = timelineLines(view, { columns: e.props.bodyColumns, byTime, clock: clockOf(view.tz) })
-    return (
-      <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={2}>
-          <Button key="order" hotkey="s" plain onPress={() => update($, isTimelineByTime, v => !v)}>
-            {byTime ? 'as it happened' : 'longest first'}
-          </Button>
-          <Button key="reload" hotkey="r" plain onPress={() => loadTimeline($)}>
-            read again
-          </Button>
+    const data = await read($, pane)
+    const view = await read($, paneView)
+    const columns = Math.max(1, e.props.bodyColumns)
+    const height = Math.max(8, e.props.scroll?.bodyRows ?? 24)
+    const laid = paneLayout(data, view, columns, height, clockOf(data?.tz))
+    drawn = { count: laid.count, open: laid.open }
+    const style = (s: Segment) => ({
+      ...(s.color === undefined ? {} : { color: s.color }),
+      ...(s.bg === undefined ? {} : { backgroundColor: s.bg }),
+      ...(s.bold ? { bold: true } : {}),
+      ...(s.dim ? { dimColor: true } : {}),
+    })
+    // A press is a Button; one drawn out of sight is there for its hotkey
+    // alone. Everything else is text, cut at the row's edge.
+    const piece = (s: Segment, i: number) => {
+      const press = s.press
+      if (press !== undefined && s.hidden === true) {
+        return (
+          <Box key={`hidden-${press.id}`} display="none">
+            <Button key={press.id} plain label={press.label} {...(press.hotkey === undefined ? {} : { hotkey: press.hotkey })} onPress={() => pressed($, press.id)} />
+          </Box>
+        )
+      }
+      if (press !== undefined) {
+        return (
+          <Button
+            key={press.id}
+            plain
+            label={press.label}
+            {...(press.hotkey === undefined ? {} : { hotkey: press.hotkey })}
+            {...(s.dim ? { dimColor: true } : {})}
+            onPress={() => pressed($, press.id)}
+          />
+        )
+      }
+      return (
+        <Text key={`t${i}`} wrap="truncate-end" {...style(s)}>
+          {s.text}
+        </Text>
+      )
+    }
+    const line = (row: Row) => {
+      const shown = row.segments.filter(s => s.text !== '' || s.press !== undefined)
+      // A blank row still takes its line: the space between sections is part of the page.
+      const isBlank = shown.every(s => s.hidden === true)
+      return (
+        <Box key={row.key} flexDirection="row" width={columns} height={1} overflow="hidden">
+          {isBlank ? [<Text key="blank"> </Text>, ...shown.map(piece)] : shown.map(piece)}
         </Box>
-        {lines.map(line => (
-          <Text
-            bold={line.tone === 'head'}
-            dimColor={line.tone === 'dim'}
-            color={line.tone === 'warn' ? 'warning' : undefined}
-            wrap="truncate"
-          >
-            {line.text}
-          </Text>
-        ))}
+      )
+    }
+    return (
+      <Box key="timestamps-pane" flexDirection="column">
+        {laid.rows.map(line)}
       </Box>
     )
   })
@@ -304,8 +395,8 @@ export function registerLive(on: On): void {
       for (const k of [...usualByCall.keys()]) if (!left.some(c => cacheKey(c) === k)) usualByCall.delete(k)
       syncRedraw($, left.length > 0)
       await paint($)
-      // An open timeline gains the turn that just ended.
-      if ((await read($, timeline)) !== null) await loadTimeline($)
+      // An open pane gains the turn that just ended.
+      if (await isPaneOpen($)) await loadPane($)
     }
     return next(e)
   }).catch(($, e, next) => next(e))

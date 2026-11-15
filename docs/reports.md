@@ -53,43 +53,50 @@ bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/setup.sh" --turns
 bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/setup.sh" --session --json
 ```
 
-## The timeline pane
+## The pane
 
-In Claude Code, `/timeline` opens a pane beside the conversation that shows
-where the session's time went, turn by turn: when each turn started, how long
-it took, and under it the calls that took five seconds or more, longest
-first.
+In Claude Code, `/timestamps` opens a pane beside the conversation, and closes
+it again. It shows where the session's time went, on six tabs:
 
-```text
-s: longest first  r: read again
-9 turns · 2h31m working · since 17:35
-#7  18:34  28m41s · 9m32s in 8 listed calls
-    1m11s  bash tests/run.sh  usually 1m05s
-#8  19:10  29m45s · 11m02s in 6 listed calls
-    2m47s  bash tools/check-docs.sh  ▲ 2.5× usual 1m07s
-    2m00s  bash tests/run.sh  ■ stopped at its limit
-    1m27s  Bash, several commands
-   18m43s  the rest: thinking, writing, calls under 5s
-#9  19:41  20s
-```
+| Tab | What it shows |
+| --- | --- |
+| Overview | The session at a glance: how long it has run, how many turns, how long you waited and were away, how many calls were slow, stopped or failed; where the working time went as one bar; the calls that ran well over their usual time; the longest turns; the checks; the last notes sent to Claude |
+| Turns | Every turn with its start, its length and the time its listed calls took, and beside it the marked turn: its calls in the order they ran, each with its usual time, and what no call accounts for |
+| Commands | This project's command memory: runs, usual time, longest run, how often a command was stopped or failed, and the marked command's runs in this session |
+| Checks | Each check run this session, how it ended and how many files have changed since |
+| Told Claude | Every note the plugin sent Claude this session, newest first: slow and stopped calls, raised limits, stale checks, turn length, and what it said at session start |
+| History | Finished sessions by day (time, how long you waited, turns) and by project when `PROJECTS` is on |
 
-A call is marked when it ran one and a half times its usual time here or
-more, when it was stopped at its limit, and when it failed. A chain of
+A call is listed when it took five seconds or more, or was stopped at its
+limit. It is marked `▲` when it ran one and a half times its usual time or
+more, `■` when it was stopped at its limit and `✗` when it failed. A chain of
 commands has no single name, so it is listed as several commands; a call made
-by a subagent says so. "The rest" is the turn's time less its listed calls,
-and is left out when calls ran side by side and add up to more than the turn.
+by a subagent says so. "The rest" is a turn's time less its listed calls, and
+is left out when calls ran side by side and add up to more than the turn.
 
-With the pane focused (ctrl+x tab), `s` switches between the order the turns
-happened in and longest first, and `r` reads the session again; the arrows
-scroll. `/timeline longest` opens it longest first. The pane updates when a
-turn ends.
+Give the pane the keys with ctrl+x tab. Then:
 
-It draws what the hooks recorded and records nothing itself. The calls come
-from a per-session list the tool hook keeps while `LIVE` is on and any of the
-settings that keep that hook awake is (the notes, `COMMAND_MEMORY`,
-`CHECK_NOTE` or `TOOL_TIMING`); with all of those off the pane still shows
-the turns. Like the command memory, the list holds a short key per call,
-never the command line, and it is cleared when the session ends.
+| Key | What it does |
+| --- | --- |
+| `1` to `6` | Open a tab |
+| `j`, `k` | Move the marker down and up |
+| `o` | On the overview, open the marked turn on the Turns tab |
+| `s` | On Turns and Commands, change the order of the list |
+| `r` | Read the session again |
+
+`/timestamps turns`, or any tab's name or the start of it, opens the pane on
+that tab. The pane is read again when a turn ends, and every few seconds while
+one runs. It is drawn on the terminal's own background, and in a narrow
+terminal the list and its detail stack instead of sitting side by side.
+
+It draws what the hooks recorded and records nothing itself: one run of
+`setup.sh --pane`, which prints everything above as JSON and can be run by
+hand. The slow calls and the notes come from two per-session lists the hooks
+keep while `LIVE` is on and any of the settings that keep the tool hook awake
+is (the notes, `COMMAND_MEMORY`, `CHECK_NOTE` or `TOOL_TIMING`); with all of
+those off the pane still shows the turns. Like the command memory, the list of
+calls holds a short key per call, never the command line, and both lists are
+cleared when the session ends.
 
 `--session` also lists the checks run in the session, newest first: when each
 ran, how it ended, and how many files in the work tree have changed since.

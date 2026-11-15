@@ -50,6 +50,8 @@ export type Layout = {
 type Body = { rows: Row[]; targets: (Target | null)[] }
 
 const fmt = (seconds: number) => formatDuration(seconds)
+// A command's time from the memory: under a second is said so, not rounded to nothing.
+const span = (ms: number) => (ms < 1000 ? '<1s' : formatDuration(ms / 1000))
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 const dimText = (key: string, text: string): Row => ({ key, segments: [{ text, dim: true }] })
 
@@ -125,9 +127,12 @@ function tiles(all: Tile[], columns: number): Row[] {
   const need = (list: Tile[]) => list.reduce((sum, t) => sum + Math.max(cells(t.figure), cells(t.label)) + 2, 0) + (list.length - 1)
   while (shown.length > 1 && need(shown) > inner) shown = shown.slice(0, -1)
   if (shown.length === 0 || need(shown) > inner) return []
-  const room = inner - (shown.length - 1)
-  const each = Math.floor(room / shown.length)
-  const sizes = shown.map((_, i) => each + (i < room % shown.length ? 1 : 0))
+  // Each tile as wide as it needs, and what is left shared out evenly, so a
+  // long label is never cut to make the tiles equal.
+  const least = shown.map(t => Math.max(cells(t.figure), cells(t.label)) + 2)
+  const spare = inner - (shown.length - 1) - least.reduce((a, b) => a + b, 0)
+  const each = Math.floor(spare / shown.length)
+  const sizes = least.map((n, i) => n + each + (i < spare % shown.length ? 1 : 0))
   const edge = (l: string, r: string): Row => ({ key: `tiles-${l}`, segments: [{ text: `${l}${'─'.repeat(inner)}${r}`, dim: true }] })
   const line = (key: string, cell: (t: Tile) => Segment): Row => ({
     key,
@@ -135,7 +140,7 @@ function tiles(all: Tile[], columns: number): Row[] {
       { text: '│', dim: true },
       ...shown.flatMap((t, i): Segment[] => {
         const c = cell(t)
-        return [{ ...c, text: padEnd(` ${c.text}`, sizes[i] ?? each) }, { text: '│', dim: true }]
+        return [{ ...c, text: padEnd(` ${c.text}`, sizes[i] ?? 0) }, { text: '│', dim: true }]
       }),
     ],
   })
@@ -434,7 +439,7 @@ function turns(data: PaneData, view: PaneView, w: number, room: number, clock: C
   const list: Row[] = [
     rule('turns', '⧖', 'Turns', `${order.length} · ${view.isByTime ? 'longest first' : 'as they happened'}`, listW),
     blank('gap-turns'),
-    dimText('turns-head', padTo([{ text: `  ${padEnd('#', 5)}${padEnd('start', 5)}${padStart('took', 9)}${' '.repeat(barW >= 4 ? barW + 2 : 0)}${padStart('in calls', 10)}` }], listW)[0]?.text ?? ''),
+    dimText('turns-head', `  ${padEnd('#', 5)}${padEnd('start', 5)}${padStart('took', 9)}${' '.repeat(barW >= 4 ? barW + 2 : 0)}${padStart('in calls', 10)}`),
   ]
   // A stacked pane gives the list about half its rows; side by side it has them all.
   const listRoom = Math.max(3, (isWide ? room : Math.floor(room / 2)) - 5)
@@ -480,10 +485,10 @@ function commandOrder(data: PaneData, isByTime: boolean): PaneCommand[] {
 function commandDetail(data: PaneData, command: PaneCommand, w: number, clock: Clock): Row[] {
   const rows: Row[] = [rule('detail', '◆', fit(command.key, Math.max(8, w - 12)), '', w, ACCENT), blank('gap-detail')]
   const line = (key: string, segments: Segment[]) => rows.push({ key, segments: clip([{ text: ' ' }, ...segments], w) })
-  if (command.runs >= 3) line('cmd-usual', [{ text: `usually ${fmt(command.medianMs / 1000)}`, bold: true }, { text: `  over ${plural(command.runs, 'finished run')}`, dim: true }])
+  if (command.runs >= 3) line('cmd-usual', [{ text: `usually ${span(command.medianMs)}`, bold: true }, { text: `  over ${plural(command.runs, 'finished run')}`, dim: true }])
   else if (command.runs > 0) line('cmd-usual', [{ text: `${plural(command.runs, 'finished run')}`, bold: true }, { text: '  too few for a usual time', dim: true }])
   else line('cmd-usual', [{ text: 'never seen to finish', bold: true }])
-  if (command.runs > 0) line('cmd-range', [{ text: `longest ${fmt(command.maxMs / 1000)}  ·  last ${fmt(command.lastMs / 1000)}`, dim: true }])
+  if (command.runs > 0) line('cmd-range', [{ text: `longest ${span(command.maxMs)}  ·  last ${span(command.lastMs)}`, dim: true }])
   if (command.stopped > 0) line('cmd-stopped', [{ text: `■ stopped at its limit ${plural(command.stopped, 'time')}, last at ${fmt(command.limitMs / 1000)}`, color: WARN }])
   if (command.failed > 0) line('cmd-failed', [{ text: `✗ ${plural(command.failed, 'run')} failed`, color: BAD }])
   rows.push(blank('gap-cmd'), rule('cmd-session', '◷', 'This session', '', w), blank('gap-cmd-session'))
@@ -513,7 +518,8 @@ function commands(data: PaneData, view: PaneView, w: number, room: number, clock
   const isWide = w >= 100
   const listW = isWide ? Math.min(64, Math.floor(w * 0.5)) : w
   const nameW = Math.max(10, Math.min(30, listW - 32))
-  const barW = Math.max(0, listW - 2 - nameW - 21 - 8)
+  // The marker, the name, three figures, a gap either side of the bar, and room for both flags.
+  const barW = Math.max(0, listW - nameW - 34)
   const most = Math.max(1, ...order.map(c => c.medianMs))
   const list: Row[] = [
     rule('commands', '◔', 'Commands', `${order.length} · ${view.isByTime ? 'most time this session' : 'slowest first'}`, listW),
@@ -535,8 +541,8 @@ function commands(data: PaneData, view: PaneView, w: number, room: number, clock
         [
           { text: padEnd(fit(c.key, nameW), nameW) },
           { text: padStart(String(c.runs), 5), dim: true },
-          { text: padStart(c.runs >= 3 ? fmt(c.medianMs / 1000) : '', 8), bold: true },
-          { text: padStart(c.runs > 0 ? fmt(c.maxMs / 1000) : '', 8), dim: true },
+          { text: padStart(c.runs >= 3 ? span(c.medianMs) : '', 8), bold: true },
+          { text: padStart(c.runs > 0 ? span(c.maxMs) : '', 8), dim: true },
           ...(barW >= 4 ? [{ text: '  ' }, ...bar(c.medianMs / most, barW, TURN_HUE)] : []),
           { text: '  ' },
           ...flags,
