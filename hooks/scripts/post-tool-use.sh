@@ -64,7 +64,7 @@ IFS=$'\x1f' read -r session_id tool_name event ms tool_use_id agent_id outcome c
   (.tool_input | if type == "object" then . else {} end) as $ti
   | (if .tool_name == "Bash" then ($ti.command // "" | ct_cmdparse) else {key: "", timeout: false} end) as $c
   | (if .hook_event_name == "PostToolUseFailure" or .error != null or .success == false or .status == "error" or .status == "failed" or (.tool_response | if type == "object" then .error != null else false end) then "fail" else "ok" end) as $o
-  | (($ti.timeout | numbers) // (env.BASH_DEFAULT_TIMEOUT_MS | select(digits) | tonumber) // 120000) as $lim
+  | (($ti.timeout | numbers | select(. > 0)) // (env.BASH_DEFAULT_TIMEOUT_MS | select(digits) | tonumber | select(. > 0)) // 120000) as $lim
   | (.error | if type == "string" then . else "" end) as $e
   | (if .tool_name == "Bash" and $o == "fail" and $ti.run_in_background != true and (.duration_ms | type) == "number" then
        if .duration_ms + 250 >= $lim then $lim

@@ -7389,6 +7389,9 @@ if command -v jq >/dev/null 2>&1; then
   is "limit: the default limit is two minutes" "proj-l	npm test	120010	limit" "$(lm_last)"
   lm_call 40000 'npm test' '{"timeout":120000}' >/dev/null
   is "limit: an early failure is a failure" "proj-l	npm test	40000	fail" "$(lm_last)"
+  # A limit of zero is no limit; taken literally, every failure would be past it.
+  lm_call 5000 'npm test' '{"timeout":0}' >/dev/null
+  is "limit: a zero timeout is not a limit" "proj-l	npm test	5000	fail" "$(lm_last)"
   BASH_DEFAULT_TIMEOUT_MS=300000 lm_call 120010 'cargo build' >/dev/null
   is "limit: an environment default moves the limit" "proj-l	cargo build	120010	fail" "$(lm_last)"
   # What Claude Code itself says outranks a limit this hook had to work out.
@@ -7445,7 +7448,7 @@ if command -v jq >/dev/null 2>&1; then
     | CT_CLIENT=codex bash "$SCRIPTS/post-tool-use.sh" >/dev/null
   is "limit: a call without duration_ms is a failure" "fail" "$(lm_last | cut -f4)"
 else
-  for lm_label in "note" "recorded" "default" "early" "env" "text" "text recorded" "other tool" "background" "succeeded" \
+  for lm_label in "note" "recorded" "default" "early" "zero" "env" "text" "text recorded" "other tool" "background" "succeeded" \
                   "shell timeout" "wrapped" "exit 124" "finishes in" "counts" "memory off" "no key" "notes off" \
                   "still recorded" "inject off" "subagent" "tool log" "codex"; do
     skip "limit: $lm_label" "jq is not installed"
