@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.42](https://github.com/AraneaDev/timestamps/compare/v0.0.41...v0.0.42) (2026-11-15)
+
+
+### Features
+
+* make /timestamps a dashboard pane with six tabs ([#120](https://github.com/AraneaDev/timestamps/issues/120)) ([594c6aa](https://github.com/AraneaDev/timestamps/commit/594c6aa0ee95f8572ebb0044eb6ca1c2a34945a5))
+
 ## [0.0.41](https://github.com/AraneaDev/timestamps/compare/v0.0.40...v0.0.41) (2026-11-15)
 
 
