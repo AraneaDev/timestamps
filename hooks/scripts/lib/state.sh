@@ -60,8 +60,12 @@
 # Only the first line is read. Further non-blank lines are a heredoc body
 # when the first line opens one (<<); otherwise they are a script whose other
 # commands were never looked at, and the call has no key.
+#
+# ct_cmdparse gives {key, timeout}: the key, and whether a command on the
+# line ran under timeout(1), which post-tool-use.sh needs to tell a limit
+# that fired (exit 124) from a failure. ct_cmdkey is the key alone.
 # shellcheck disable=SC2016,SC2034  # jq source, not shell; read by the hooks that source this file
-CT_JQ_CMDKEY='def ct_cmdkey:
+CT_JQ_CMDKEY='def ct_cmdparse:
   def unquote:
     [foreach explode[] as $c ({q: null, e: null, p: null};
       (if .q != null then (if $c == .q then .q = null else . end) | .e = null
@@ -100,14 +104,22 @@ CT_JQ_CMDKEY='def ct_cmdkey:
     elif (.[0] | base) == "stdbuf" then .[1:] | dashes | strip
     elif (.[0] | base) == "timeout" then .[1:] | limit | strip
     else . end;
+  # Whether timeout is among the wrappers at the front of a piece.
+  def wrapped:
+    if length == 0 then false
+    elif (.[0] | prefix) then .[1:] | wrapped
+    elif (.[0] | base) == "nohup" then .[1:] | wrapped
+    elif (.[0] | base) == "stdbuf" then .[1:] | dashes | wrapped
+    else (.[0] | base) == "timeout" end;
   def ignored: . as $w | ["cd", "pushd", "popd", "export", "set", "unset", "source", ".", "echo", "printf", "true", ":", "exit"] | index($w) != null;
   def control: . as $w | ["until", "while", "for", "do", "done", "if", "then", "else", "elif", "fi", "case", "esac"] | index($w) != null;
   def take: if length == 0 or (.[0] | stops) then [] else [.[0]] + (.[1:] | take) end;
   # One piece of the line: {k: "i"} ignored, {k: "c"} control, or
   # {k: "r", key: ...} a real command, its key empty when it cannot be keyed.
+  # t says whether the piece ran under timeout.
   def piece:
-    ((split("|") | .[0]) // "") | words | .[0:40] | strip
-    | if length == 0 then {k: "i"}
+    ((split("|") | .[0]) // "") | words | .[0:40] | wrapped as $t | strip
+    | {t: $t} + if length == 0 then {k: "i"}
       else (.[0] | base) as $prog
         | if ($prog | ignored) then {k: "i"}
           elif ($prog | control) then {k: "c"}
@@ -116,17 +128,19 @@ CT_JQ_CMDKEY='def ct_cmdkey:
           else {k: "r", key: (([$prog] + (.[1:3] | take)) | join(" ") | .[0:60])} end
       end;
   def blank: explode | all(.[]; . == 32 or . == 9 or . == 13);
-  if type != "string" then "" else
+  if type != "string" then {key: "", timeout: false} else
     split("\n") as $lines
     | ($lines[0] // "") as $first
-    | if ($lines[1:] | any(.[]; blank | not)) and ($first | contains("<<") | not) then ""
+    | if ($lines[1:] | any(.[]; blank | not)) and ($first | contains("<<") | not) then {key: "", timeout: false}
       else
         $first | unquote | split("\t") | join(" ")
         | [splitall(["&&", "||", ";"])[] | select(words | length > 0) | piece]
-        | if any(.[]; .k == "c") then ""
-          else map(select(.k == "r")) | if length == 1 then .[0].key else "" end end
+        | {key: (if any(.[]; .k == "c") then ""
+                 else map(select(.k == "r")) | if length == 1 then .[0].key else "" end end),
+           timeout: any(.[]; .t)}
       end
-  end;'
+  end;
+def ct_cmdkey: ct_cmdparse | .key;'
 
 # Where per-session state lives.
 #
@@ -698,6 +712,41 @@ ct_slow_tool_note_var() {
 ct_slow_tool_note() {
   ct_slow_tool_note_var "$@"
   printf '%s' "$_CT_NOTE"
+}
+
+# The sentence the tool hook adds when a Bash call was stopped at its time
+# limit, or nothing. A fact, like the slow-tool note it replaces for such a
+# call: what to do next time is the skill's business.
+#   $1 tool name   $2 the limit in ms   $3 usual seconds over finished runs,
+#   or empty   $4 earlier stopped runs of this command   $5 earlier runs of
+#   it altogether, finished and stopped
+#
+# With a usual figure the note says how long the command takes when it does
+# finish, which is what a new limit has to clear. Without one it says how
+# often this has happened, once it has happened before. $4 and $5 leave out
+# the call the note is about, so it is counted in here.
+#
+# Assigns _CT_NOTE, for the reason ct_slow_tool_note_var does.
+ct_limit_note_var() {
+  local tool="${1:-}" lim="${2:-}" usual="${3:-}" stopped="${4:-}" total="${5:-}" at tail=""
+  _CT_NOTE=""
+  case "$lim" in ''|*[!0-9]*) return 0 ;; esac
+  [ "${#lim}" -le 15 ] || return 0
+  at="$(ct_format_duration $(( 10#$lim / 1000 )))" || return 0
+  [ -n "$tool" ] || tool="tool"
+  case "$usual" in
+    ''|*[!0-9]*)
+      case "$stopped" in ''|*[!0-9]*) stopped=0 ;; esac
+      case "$total" in ''|*[!0-9]*) total=0 ;; esac
+      if [ $(( 10#$stopped + 1 )) -ge 2 ]; then
+        tail=" ($(( 10#$stopped + 1 )) of its last $(( 10#$total + 1 )) runs were)"
+      fi
+      ;;
+    # A median under a second floors to 0, which is no duration to quote.
+    0) tail=" (finishes in under 1s when it does)" ;;
+    *) tail=" (finishes in ~$(ct_format_duration "$((10#$usual))") when it does)" ;;
+  esac
+  printf -v _CT_NOTE 'That %s call was stopped at its %s limit%s.' "$tool" "$at" "$tail"
 }
 
 # The sentence telling the model how long the open turn has run, when a new

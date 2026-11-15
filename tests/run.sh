@@ -7340,6 +7340,96 @@ else
 fi
 
 echo
+echo "command memory: stopped at the limit"
+
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$WORK/proj-l"
+  lm_prompt() { printf '{"session_id":"lm","cwd":"%s"}' "$WORK/proj-l" | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null; }
+  # $1 ms, $2 command, $3 extra tool_input fields, $4 extra top-level fields
+  # (both JSON objects, optional). A failure unless $4 says otherwise.
+  lm_call() {
+    jq -cn --argjson ms "$1" --arg c "$2" --argjson ti "${3:-null}" --argjson top "${4:-null}" \
+      '{session_id: "lm", tool_name: "Bash", hook_event_name: "PostToolUseFailure", duration_ms: $ms,
+        tool_input: ({command: $c} + ($ti // {}))} + ($top // {})' \
+      | bash "$SCRIPTS/post-tool-use.sh" | jq -r '.hookSpecificOutput.additionalContext // ""'
+  }
+  lm_row() { printf '%s\tproj-l\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "${3:-ok}" >> "$CLAUDE_TIMESTAMP_COMMANDS"; }
+  lm_last() { tail -n 1 "$CLAUDE_TIMESTAMP_COMMANDS" | cut -f2-5; }
+  lm_lines() { if [ -r "$CLAUDE_TIMESTAMP_COMMANDS" ]; then wc -l < "$CLAUDE_TIMESTAMP_COMMANDS" | tr -d ' '; else echo 0; fi; }
+
+  fresh; lm_prompt
+  # A limit shorter than SLOW_TOOL_AFTER that was hit is still a fact worth telling.
+  is "limit: the note names the limit" "That Bash call was stopped at its 2s limit." \
+    "$(lm_call 2024 'bash tests/run.sh' '{"timeout":2000}')"
+  is "limit: recorded as limit" "proj-l	bash tests/run.sh	2024	limit" "$(lm_last)"
+  lm_call 120010 'npm test' >/dev/null
+  is "limit: the default limit is two minutes" "proj-l	npm test	120010	limit" "$(lm_last)"
+  lm_call 40000 'npm test' '{"timeout":120000}' >/dev/null
+  is "limit: an early failure is a failure" "proj-l	npm test	40000	fail" "$(lm_last)"
+  BASH_DEFAULT_TIMEOUT_MS=300000 lm_call 120010 'cargo build' >/dev/null
+  is "limit: an environment default moves the limit" "proj-l	cargo build	120010	fail" "$(lm_last)"
+  # What Claude Code itself says outranks a limit this hook had to work out.
+  is "limit: the failure text says it timed out" "That Bash call was stopped at its 30s limit." \
+    "$(BASH_DEFAULT_TIMEOUT_MS=300000 lm_call 30010 'make' '' '{"error":"Exit code 143\nCommand timed out after 30s"}')"
+  is "limit: and that is recorded" "proj-l	make	30010	limit" "$(lm_last)"
+  is "limit: only Bash has a limit" "That WebFetch call failed after 2m10s." \
+    "$(lm_call 130000 'x' '' '{"tool_name":"WebFetch"}')"
+  lm_before="$(lm_lines)"
+  lm_call 120010 'npm test' '{"run_in_background":true}' >/dev/null
+  is "limit: a background call is not recorded" "$lm_before" "$(lm_lines)"
+  lm_call 120010 'npm test' '' '{"hook_event_name":"PostToolUse"}' >/dev/null
+  is "limit: a call that succeeded was not stopped" "proj-l	npm test	120010	ok" "$(lm_last)"
+
+  # timeout(1) around the command is a limit too: it exits 124 when it fires.
+  is "limit: a shell timeout that fired" "That Bash call was stopped at its 1s limit." \
+    "$(lm_call 1021 'timeout 1 sleep 5' '' '{"error":"Exit code 124"}')"
+  is "limit: is recorded under the wrapped command" "proj-l	sleep	1021	limit" "$(lm_last)"
+  lm_call 1021 'make' '' '{"error":"Exit code 124"}' >/dev/null
+  is "limit: exit 124 without a timeout is a failure" "proj-l	make	1021	fail" "$(lm_last)"
+
+  fresh; lm_row 'npm test' 130000; lm_row 'npm test' 136000; lm_row 'npm test' 140000; lm_prompt
+  is "limit: the note quotes what it takes when it finishes" \
+    "That Bash call was stopped at its 2m00s limit (finishes in ~2m16s when it does)." "$(lm_call 120010 'npm test')"
+  fresh; lm_row 'npm test' 120010 limit; lm_row 'npm test' 50000; lm_prompt
+  is "limit: the note counts stopped runs" \
+    "That Bash call was stopped at its 2m00s limit (2 of its last 3 runs were)." "$(lm_call 120010 'npm test')"
+  fresh 'COMMAND_MEMORY=off'; lm_row 'npm test' 130000; lm_row 'npm test' 136000; lm_row 'npm test' 140000; lm_prompt
+  is "limit: COMMAND_MEMORY=off, the bare note" "That Bash call was stopped at its 2m00s limit." "$(lm_call 120010 'npm test')"
+  # No key, so nothing to look up: a chain is not remembered, but it was stopped.
+  fresh; lm_prompt
+  is "limit: a call without a key still gets the bare note" "That Bash call was stopped at its 2m00s limit." \
+    "$(lm_call 120010 'sleep 100; make')"
+
+  fresh 'SLOW_TOOL_AFTER=0'; lm_prompt
+  is "limit: no note when slow-tool notes are off" "" "$(lm_call 2024 'make' '{"timeout":2000}')"
+  is "limit: but it is still recorded" "proj-l	make	2024	limit" "$(lm_last)"
+  fresh 'INJECT_CONTEXT=false'; lm_prompt
+  is "limit: INJECT_CONTEXT=false tells the model nothing" "" "$(lm_call 2024 'make' '{"timeout":2000}')"
+  fresh 'SUBAGENTS=off'; lm_prompt
+  is "limit: SUBAGENTS=off sends a subagent no note" "" "$(lm_call 2024 'make' '{"timeout":2000}' '{"agent_id":"sub1"}')"
+
+  fresh 'TOOL_TIMING=on'; lm_prompt
+  lm_call 2024 'make' '{"timeout":2000}' >/dev/null
+  is "limit: the tool log still says fail" "Bash 2.024 fail" "$(tail -n 1 "$(ct_tool_log lm)")"
+
+  # Codex sends no duration_ms; the hook measures it afterwards, in shell. The
+  # limit is Claude Code's, so such a call is a failure and nothing more.
+  fresh; lm_prompt
+  printf '{"session_id":"lm","tool_use_id":"lm-codex","tool_name":"Bash"}' \
+    | CT_CODEX_HOOK=1 CT_CLIENT=codex bash "$SCRIPTS/pre-tool-use.sh"
+  printf '%s' "$(( $(date +%s) - 3 ))" > "$(ct_tool_start_file lm lm-codex)"
+  printf '{"session_id":"lm","tool_use_id":"lm-codex","tool_name":"Bash","hook_event_name":"PostToolUse","status":"failed","tool_input":{"command":"make","timeout":1000}}' \
+    | CT_CLIENT=codex bash "$SCRIPTS/post-tool-use.sh" >/dev/null
+  is "limit: a call without duration_ms is a failure" "fail" "$(lm_last | cut -f4)"
+else
+  for lm_label in "note" "recorded" "default" "early" "env" "text" "text recorded" "other tool" "background" "succeeded" \
+                  "shell timeout" "wrapped" "exit 124" "finishes in" "counts" "memory off" "no key" "notes off" \
+                  "still recorded" "inject off" "subagent" "tool log" "codex"; do
+    skip "limit: $lm_label" "jq is not installed"
+  done
+fi
+
+echo
 echo "command memory: report"
 
 if command -v jq >/dev/null 2>&1; then
