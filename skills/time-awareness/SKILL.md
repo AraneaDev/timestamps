@@ -65,6 +65,19 @@ or `npx playwright test stopped at its limit 3 times (limit 2m00s)`.
 - With no "finishes in" figure, nobody has seen it finish. Run it in the
   background and check on it, rather than guessing a longer limit.
 
+**`Timestamps raised this call's limit from 2m00s to 3m30s: bash tests/run.sh has taken up to 2m16s here.`**
+arrives with the result of a Bash call whose limit was too short for what
+the command has taken before. The call ran with the higher limit; nothing
+needs redoing.
+
+- The limit was only raised, to cover the longest run seen. If the call was
+  still stopped, the command now takes longer than it ever has: look at why
+  before running it again.
+- It does not move a call to the background. A command that takes minutes
+  still blocks the turn in the foreground, so prefer `run_in_background` for
+  those and keep working.
+- A `timeout` you set yourself above the figure is left alone.
+
 The memory behind these figures keeps a call only when one command in it can
 have taken the time. A chain of commands, a loop or a multi-line script is
 not remembered. When a command's duration is worth knowing, run it as a call

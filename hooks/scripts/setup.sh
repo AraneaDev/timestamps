@@ -116,6 +116,9 @@ Flags
                               this conversation or project was last active.
   --command-memory=on|off     Remember how long each Bash command takes in each
                               project, and tell Claude which are usually slow.
+  --raise-limit=on|off        Raise a Bash call's time limit before it runs,
+                              when the command memory says it would be
+                              stopped, and tell Claude. Needs --command-memory.
   --live=on|off               Claude Code only: a ticking turn clock in the
                               footer, and a slow tool's time while it runs.
   --enabled=on|off            Master switch. off silences every hook without
@@ -185,6 +188,7 @@ heartbeat-after HEARTBEAT_AFTER CT_HEARTBEAT_AFTER  ct_is_seconds           -   
 slow-tool-after SLOW_TOOL_AFTER CT_SLOW_TOOL_AFTER  ct_is_seconds           -        ignore
 resume-note     RESUME_NOTE     CT_RESUME_NOTE      ct_is_onoff             -        ignore
 command-memory  COMMAND_MEMORY  CT_COMMAND_MEMORY   ct_is_onoff             -        ignore
+raise-limit     RAISE_LIMIT     CT_RAISE_LIMIT      ct_is_onoff             -        ignore
 live            LIVE            CT_LIVE             ct_is_onoff             -        ignore
 "
 
@@ -979,8 +983,8 @@ commands_report() {
       {project: (if $mode == "all" then null else $project end), all: ($mode == "all"),
        commands: [split("\n")[] | select(length > 0) | split("\t")
          | if $mode == "all"
-           then {project: .[0], key: .[1], runs: (.[2] | tonumber), median_ms: (.[3] | tonumber), last_ms: (.[4] | tonumber), failed: (.[5] | tonumber), stopped: (.[6] | tonumber), limit_ms: (.[7] | tonumber)}
-           else {key: .[0], runs: (.[1] | tonumber), median_ms: (.[2] | tonumber), last_ms: (.[3] | tonumber), failed: (.[4] | tonumber), stopped: (.[5] | tonumber), limit_ms: (.[6] | tonumber)} end]}'
+           then {project: .[0], key: .[1], runs: (.[2] | tonumber), median_ms: (.[3] | tonumber), last_ms: (.[4] | tonumber), failed: (.[5] | tonumber), stopped: (.[6] | tonumber), limit_ms: (.[7] | tonumber), max_ms: (.[8] | tonumber)}
+           else {key: .[0], runs: (.[1] | tonumber), median_ms: (.[2] | tonumber), last_ms: (.[3] | tonumber), failed: (.[4] | tonumber), stopped: (.[5] | tonumber), limit_ms: (.[6] | tonumber), max_ms: (.[7] | tonumber)} end]}'
     return $?
   fi
   if [ "$mode" = "all" ]; then
@@ -1158,6 +1162,7 @@ doctor() {
     cm_write="writable"
   fi
   echo "  command memory  $CT_COMMAND_MEMORY, $cm_runs runs recorded, $cm_write"
+  echo "  raise limit     $CT_RAISE_LIMIT"
   echo
 
   echo "State"
@@ -1332,6 +1337,13 @@ RESUME_NOTE=$CT_RESUME_NOTE
 # such as "npm test", never the full command line. Tells Claude at session
 # start which commands are usually slow here.
 COMMAND_MEMORY=$CT_COMMAND_MEMORY
+
+# Raise the time limit of a Bash call before it runs, when the command memory
+# says it would be stopped: to one and a half times the longest run seen, or
+# twice the limit it was stopped at. Claude is told each time. Never lowers a
+# limit, never approves a call. Needs COMMAND_MEMORY, and INJECT_CONTEXT=false
+# switches it off as well.
+RAISE_LIMIT=$CT_RAISE_LIMIT
 
 # Claude Code only: a ticking turn clock in the footer, and a slow tool's time
 # while it runs past its usual time. Display only.
@@ -1543,6 +1555,7 @@ show_config() {
   echo "  Slow tool note  $CT_SLOW_TOOL_AFTER s"
   echo "  Resume note     $CT_RESUME_NOTE"
   echo "  Command memory  $CT_COMMAND_MEMORY"
+  echo "  Raise limit     $CT_RAISE_LIMIT"
   echo "  Live layer      $CT_LIVE"
   echo
   echo -n "  Preview         "; preview

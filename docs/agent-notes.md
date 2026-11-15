@@ -14,6 +14,7 @@ has a setting of its own.
 | The first tool result after a turn passes 15 minutes, and every 15 after | `Turn running 15m02s (prompt sent 10:37:21); now 10:52:23 CEST.` | `HEARTBEAT_AFTER` |
 | One tool call takes a minute or more | `That Bash call took 2m14s.` or, for a command with a few earlier runs here, `That Bash call took 6m10s (usually 4m02s).` | `SLOW_TOOL_AFTER` |
 | A Bash call is stopped at its time limit, however short the limit | `That Bash call was stopped at its 2m00s limit (finishes in ~2m16s when it does).` or, for a command with too few finished runs to say, `That Bash call was stopped at its 2m00s limit (2 of its last 3 runs were).` | `SLOW_TOOL_AFTER` (only `0` silences it), `COMMAND_MEMORY` for the part in brackets |
+| A Bash call is about to run with a time limit the command memory says is too short | `Timestamps raised this call's limit from 2m00s to 3m30s: bash tests/run.sh has taken up to 2m16s here.` or, for a command only ever stopped, `Timestamps raised this call's limit from 2m00s to 4m00s: npx playwright test was stopped at 2m00s here and has not been seen to finish.` | `RAISE_LIMIT`, `COMMAND_MEMORY` |
 | A session starts in a project where some commands usually take a minute or more, or were stopped at their limit at least twice | `Usually slow in this project: bash tests/run.sh ~4m02s (12 runs).`, with stopped runs `bash tests/run.sh ~2m16s (3 runs, 2 more stopped at the 2m00s limit)`, and for a command that has rarely finished `npx playwright test stopped at its limit 3 times (limit 2m00s)` | `COMMAND_MEMORY`, `SLOW_TOOL_AFTER` |
 | A session starts an hour or more after the last one in this project, or a conversation is resumed an hour or more after its last activity | `Previous session in this project ended 14h ago (Thu 20:12:05).` or `Resuming this conversation; last activity 14h ago (Thu 20:12:05).` | `RESUME_NOTE` |
 | A conversation is compacted | `Conversation compacted. Session started 09:12:05 (3h04m ago), 41 turns so far, 1h02m of it waiting. Longest turns: 10:37:21 (22m04s), 14:05:10 (15m30s).` | `RESUME_NOTE` |
@@ -42,6 +43,18 @@ loop, a multi-line script and `bash -c '...'` are not remembered at all: one
 call has one duration, and putting it on the wrong command would teach Claude
 something false. A run stopped at its limit lasted as long as the limit, not
 as long as the command, so it is counted apart and left out of the usual time.
+
+One note reports something the plugin did rather than something it saw. A
+note sent before a call arrives together with the call's result, which is too
+late to say "this will be stopped". So where the memory shows a foreground
+Bash call's limit is too short, the plugin raises that one argument before
+the call runs, and the note says so. The limit goes to one and a half times
+the longest run seen here, or to twice the limit the command was last stopped
+at when it has not been seen to get further, rounded up to ten seconds and
+never past Claude Code's own maximum. It is only ever raised. The command is
+not touched, a background call is left alone, and the call is not approved on
+anyone's behalf: one that needed permission still asks. `RAISE_LIMIT=off`
+switches it off.
 
 A note can only reach Claude when a hook runs, so the turn-length note waits
 for the next tool result. A single 31-minute command produces one note when

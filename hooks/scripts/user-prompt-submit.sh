@@ -89,6 +89,13 @@ if state_file="$(ct_state_file "$session_id")"; then
     cmdmem="on"
   fi
   ct_stage_flag "$session_id" "cmdmem"  "$cmdmem"
+  # Raising a call's limit needs the memory to go by, and is never done where
+  # the plugin may not say that it did: INJECT_CONTEXT=false stops it too.
+  raise="off"
+  if [ "$cmdmem" = "on" ] && [ "$CT_RAISE_LIMIT" = "on" ] && [ "$CT_INJECT_CONTEXT" != "false" ]; then
+    raise="on"
+  fi
+  ct_stage_flag "$session_id" "raise"   "$raise"
   ct_stage_flag "$session_id" "project" "$(ct_project_name "$cwd")"
 
   # A sentinel whose mere existence answers "does any session on this machine

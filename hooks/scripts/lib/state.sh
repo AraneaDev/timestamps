@@ -140,7 +140,14 @@ CT_JQ_CMDKEY='def ct_cmdparse:
            timeout: any(.[]; .t)}
       end
   end;
-def ct_cmdkey: ct_cmdparse | .key;'
+def ct_cmdkey: ct_cmdparse | .key;
+# The time limit of a Bash call, in ms, from its tool_input: the timeout it
+# names, else BASH_DEFAULT_TIMEOUT_MS, else two minutes, which is how Claude
+# Code itself decides. A zero is no limit and is passed over.
+def ct_bash_limit:
+  (.timeout | numbers | select(. > 0))
+  // (env.BASH_DEFAULT_TIMEOUT_MS | select(type == "string" and (explode | length > 0 and all(.[]; . >= 48 and . <= 57))) | tonumber | select(. > 0))
+  // 120000;'
 
 # Where per-session state lives.
 #
@@ -1010,8 +1017,8 @@ ct_prune_commands() {
 }
 
 # Per command in one project, over its last 20 runs: key, runs, median ms,
-# last ms, failures, stopped runs and the limit they were stopped at,
-# tab-separated, slowest median first.
+# last ms, failures, stopped runs, the limit they were stopped at and the
+# longest finished run, tab-separated, slowest median first.
 #   $1 the memory file   $2 project   $3 "all" to list every project instead,
 #   with the project as an extra first column
 # The median of an even count is the mean of the middle two, rounded down.
@@ -1044,16 +1051,69 @@ ct_command_stats() {
         # The last 20 runs only, the window pruning keeps, so the figures do
         # not depend on whether a session end has pruned the file yet.
         first = (n[id] > 20) ? n[id] - 19 : 1
-        m = 0; fails = 0; stopped = 0; lim = 0; last = 0
+        m = 0; fails = 0; stopped = 0; lim = 0; last = 0; max = 0
         for (i = first; i <= n[id]; i++) {
           if (o[id, i] == "limit") { stopped++; lim = v[id, i] + 0 }
-          else { a[++m] = v[id, i] + 0; fails += (o[id, i] == "fail"); last = v[id, i] + 0 }
+          else { a[++m] = v[id, i] + 0; fails += (o[id, i] == "fail"); last = v[id, i] + 0; if (last > max) max = last }
         }
         for (i = 2; i <= m; i++) { x = a[i]; j = i - 1; while (j >= 1 && a[j] > x) { a[j + 1] = a[j]; j-- } a[j + 1] = x }
         med = (m == 0) ? 0 : (m % 2) ? a[(m + 1) / 2] : int((a[m / 2] + a[m / 2 + 1]) / 2)
-        printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\n", id, m, med, last, fails, stopped, lim
+        printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id, m, med, last, fails, stopped, lim, max
       }
     }' "$file" | sort -t "$(printf '\t')" -k"$col","$col"nr
+  return 0
+}
+
+# Whether to raise the time limit of a Bash call about to run, and to what.
+#   $1 the call's limit, ms   $2 the highest limit allowed, ms
+#   $3 finished runs of this command   $4 the longest of them, ms
+#   $5 runs stopped at their limit   $6 the limit of the newest of those, ms
+# Assigns _CT_RAISE, the new limit in ms or empty for "leave it", and
+# _CT_RAISE_WHY: "taken" when the limit follows how long the command has
+# taken, "stopped" when all that is known is where it was stopped.
+#
+# The finished runs say how long the command takes when there are three of
+# them, or none was ever stopped, or one outlasted the stop. Then a limit
+# within a tenth of the longest run is too close, and the new one is one and
+# a half times that run. Otherwise the command has been stopped and nothing
+# shows how much longer it needed: a limit no higher than the one it was
+# stopped at is doubled. Rounded up to ten seconds, never past the cap, and
+# only ever upward.
+#
+# Whole seconds from here on, so the limit Claude is told is one it could
+# have typed.
+ct_raise_limit_var() {
+  local lim="${1:-}" cap="${2:-}" runs="${3:-0}" max="${4:-0}" stopped="${5:-0}" stop="${6:-0}" v to
+  _CT_RAISE=""
+  _CT_RAISE_WHY=""
+  for v in "$lim" "$cap"; do
+    case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  done
+  for v in "$lim" "$cap" "$runs" "$max" "$stopped" "$stop"; do
+    case "$v" in *[!0-9]*) return 0 ;; esac
+    [ "${#v}" -le 15 ] || return 0
+  done
+  # "10#": a leading zero would otherwise read as octal.
+  lim=$((10#$lim)); cap=$((10#$cap))
+  runs=$((10#${runs:-0})); max=$((10#${max:-0})); stopped=$((10#${stopped:-0})); stop=$((10#${stop:-0}))
+  if [ "$runs" -gt 0 ] && { [ "$runs" -ge 3 ] || [ "$stopped" -eq 0 ] || [ "$max" -ge "$stop" ]; }; then
+    [ $(( lim * 10 )) -lt $(( max * 11 )) ] || return 0
+    to=$(( ( (max + 999) / 1000 * 3 + 1 ) / 2 ))
+    _CT_RAISE_WHY="taken"
+  elif [ "$stopped" -gt 0 ]; then
+    [ "$lim" -le $(( stop + 250 )) ] || return 0
+    to=$(( stop / 1000 * 2 ))
+    _CT_RAISE_WHY="stopped"
+  else
+    return 0
+  fi
+  to=$(( (to + 9) / 10 * 10000 ))
+  [ "$to" -le "$cap" ] || to="$cap"
+  if [ "$to" -gt "$lim" ]; then
+    _CT_RAISE="$to"
+  else
+    _CT_RAISE_WHY=""
+  fi
   return 0
 }
 
@@ -1081,7 +1141,7 @@ ct_slow_commands_note() {
   if [ -z "$project" ] || [ "$project" = "-" ]; then
     return 0
   fi
-  while IFS=$'\t' read -r key runs med _ _ stopped lim; do
+  while IFS=$'\t' read -r key runs med _ _ stopped lim _; do
     case "$runs" in ''|*[!0-9]*) continue ;; esac
     case "$med" in ''|*[!0-9]*) continue ;; esac
     case "$stopped" in ''|*[!0-9]*) stopped=0 ;; esac

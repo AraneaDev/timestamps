@@ -1575,6 +1575,11 @@ echo "stale PreToolUse binding"
 # give that stale binding something harmless to run. This test is what stops
 # someone deleting the shim before every supported version has stopped
 # binding PreToolUse; retire the test along with the shim, together.
+# Since then the file has work of its own again, raising a Bash call's limit
+# (see "raise limit: the hook"), and is bound to Bash calls only. A session
+# from before ad31d05 still reaches it for every tool, and one that has not
+# staged the raise flag must still find it silent: that is what the next
+# four assertions hold.
 asserts "the PreToolUse compatibility shim still exists" test -e "$SCRIPTS/pre-tool-use.sh"
 # Redirected from a file rather than piped in. The shim exits without ever
 # reading stdin, so a writer on the other end of a pipe can lose the race and
@@ -1672,7 +1677,7 @@ is "a rejected format cannot smuggle a second setting into the file" "on" "$CT_E
 # to be wrong, so flag twenty-one is covered the day it is added.
 fresh 'ENABLED=on'
 flag_table="$(sed -n '/^CT_FLAG_TABLE="$/,/^"$/p' "$SCRIPTS/setup.sh" | sed '1d;$d')"
-is "every setting has a flag in the table" "26" \
+is "every setting has a flag in the table" "27" \
   "$(printf '%s\n' "$flag_table" | grep -c '^[a-z]')"
 # shellcheck disable=SC2034  # t_rest is read to consume the rest of the row
 while read -r t_flag t_rest; do
@@ -7243,11 +7248,11 @@ for i in 1 2 3; do
 done
 sc_row sc-proj 'gh run watch' 460000
 sc_row sc-proj 'gh run watch' 460000
-is "stats: median per key, slowest first" "gh run watch	2	460000	460000	0	0	0" "$(ct_command_stats "$sc_file" sc-proj | head -n 1)"
-is "stats: an even count takes the middle two" "x	4	2500	10000	0	0	0" \
+is "stats: median per key, slowest first" "gh run watch	2	460000	460000	0	0	0	460000" "$(ct_command_stats "$sc_file" sc-proj | head -n 1)"
+is "stats: an even count takes the middle two" "x	4	2500	10000	0	0	0	10000" \
   "$(printf '1\tq\tx\t1000\tok\n1\tq\tx\t2000\tok\n1\tq\tx\t3000\tok\n1\tq\tx\t10000\tok\n' > "$WORK/even.tsv"; ct_command_stats "$WORK/even.tsv" q)"
 # Only the last 20 runs count, also before session end prunes the rest.
-is "stats: only the last twenty runs count" "w	20	50	0	0	0	0" \
+is "stats: only the last twenty runs count" "w	20	50	0	0	0	0	100" \
   "$(awk 'BEGIN { for (i = 1; i <= 10; i++) printf "1\tq\tw\t0\tok\n"; for (i = 1; i <= 10; i++) printf "1\tq\tw\t100\tok\n"; printf "1\tq\tw\t0\tok\n" }' > "$WORK/window.tsv"; ct_command_stats "$WORK/window.tsv" q)"
 is "stats: all projects carry the project first" "other	make" "$(ct_command_stats "$sc_file" "" all | head -n 1 | cut -f1-2)"
 is "note: three at most, at least three runs, over the threshold, this project only" \
@@ -7267,8 +7272,8 @@ lm_now=2000000000
   printf 'x\ty\n'
 } > "$WORK/lim.tsv"
 for _ in 1 2 3; do printf '%s\tq\tu\t120010\tlimit\n' "$lm_now"; done > "$WORK/limonly.tsv"
-is "stats: finished runs only, stopped apart" "t	5	110000	90000	1	2	300020" "$(ct_command_stats "$WORK/lim.tsv" q)"
-is "stats: a key only ever stopped is listed" "u	0	0	0	0	3	120010" "$(ct_command_stats "$WORK/limonly.tsv" q)"
+is "stats: finished runs only, stopped apart" "t	5	110000	90000	1	2	300020	130000" "$(ct_command_stats "$WORK/lim.tsv" q)"
+is "stats: a key only ever stopped is listed" "u	0	0	0	0	3	120010	0" "$(ct_command_stats "$WORK/limonly.tsv" q)"
 is "usual: stopped runs do not move it" "110" "$(ct_command_usual "$WORK/lim.tsv" q t)"
 is "usual: stopped runs do not count toward three" "" "$(ct_command_usual "$WORK/limonly.tsv" q u)"
 cp "$WORK/lim.tsv" "$WORK/lim-pruned.tsv"
@@ -7454,6 +7459,126 @@ else
     skip "limit: $lm_label" "jq is not installed"
   done
 fi
+
+echo
+echo "raise limit: the decision"
+
+# $1 limit  $2 cap  $3 finished runs  $4 longest finished  $5 stopped  $6 the limit it was stopped at
+rl() { ct_raise_limit_var "$@"; printf '%s %s' "$_CT_RAISE" "$_CT_RAISE_WHY"; }
+is "raise: a limit short of the longest run goes to one and a half times it" "210000 taken" "$(rl 120000 600000 3 136000 0 0)"
+is "raise: a limit with room to spare is left" " " "$(rl 120000 600000 3 100000 0 0)"
+is "raise: within a tenth of the longest run is not room" "180000 taken" "$(rl 120000 600000 3 115000 0 0)"
+is "raise: a limit already long enough is left" " " "$(rl 300000 600000 3 136000 0 0)"
+is "raise: one finished run is evidence enough" "210000 taken" "$(rl 120000 600000 1 136000 0 0)"
+is "raise: only ever stopped, the limit doubles" "240000 stopped" "$(rl 120000 600000 0 0 2 120010)"
+is "raise: stopped once is enough" "240000 stopped" "$(rl 120000 600000 0 0 1 120010)"
+is "raise: a few runs that ended before the stop do not say how long it takes" "240000 stopped" "$(rl 120000 600000 1 50000 1 120010)"
+is "raise: a run that outlasted the stop does" "210000 taken" "$(rl 120000 600000 1 136000 1 120010)"
+is "raise: three finished runs outweigh one long stop" "210000 taken" "$(rl 120000 600000 3 136000 1 300020)"
+is "raise: a short limit that keeps stopping a quick command" "80000 taken" "$(rl 30000 600000 3 50000 2 30010)"
+is "raise: a limit above the one it was stopped at is left" " " "$(rl 200000 600000 0 0 2 120010)"
+is "raise: never past the cap" "600000 taken" "$(rl 120000 600000 3 500000 0 0)"
+is "raise: a limit at the cap is left" " " "$(rl 600000 600000 3 700000 0 0)"
+is "raise: a cap under the limit raises nothing" " " "$(rl 120000 100000 3 136000 0 0)"
+is "raise: nothing known, nothing raised" " " "$(rl 120000 600000 0 0 0 0)"
+is "raise: a limit that is not a number raises nothing" " " "$(rl abc 600000 3 136000 0 0)"
+is "raise: missing figures raise nothing" " " "$(rl 120000 600000 '' '' '' '')"
+is "raise: a leading zero is decimal" "210000 taken" "$(rl 0120000 600000 03 0136000 0 0)"
+
+echo
+echo "raise limit: the hook"
+
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$WORK/proj-r"
+  rl_prompt() { printf '{"session_id":"rl","cwd":"%s"}' "$WORK/proj-r" | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null; }
+  # $1 command, $2 extra tool_input fields, $3 extra top-level fields (JSON objects, optional)
+  rl_call() {
+    jq -cn --arg c "$1" --argjson ti "${2:-null}" --argjson top "${3:-null}" \
+      '{session_id: "rl", tool_name: "Bash", hook_event_name: "PreToolUse", tool_use_id: "rl-1",
+        tool_input: ({command: $c, description: "what it is for"} + ($ti // {}))} + ($top // {})' \
+      | bash "$SCRIPTS/pre-tool-use.sh"
+  }
+  rl_row() { printf '%s\tproj-r\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "${3:-ok}" >> "$CLAUDE_TIMESTAMP_COMMANDS"; }
+  rl_slow() { rl_row 'bash tests/run.sh' 130000; rl_row 'bash tests/run.sh' 133000; rl_row 'bash tests/run.sh' 136000; }
+
+  fresh; rl_slow; rl_prompt
+  out="$(rl_call 'cd x && bash tests/run.sh | tail -5')"
+  is "raise hook: the call's limit is raised" "210000" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.timeout')"
+  is "raise hook: the command is untouched" "cd x && bash tests/run.sh | tail -5" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command')"
+  is "raise hook: every other argument is kept" "what it is for" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.description')"
+  is "raise hook: and Claude is told" \
+    "Timestamps raised this call's limit from 2m00s to 3m30s: bash tests/run.sh has taken up to 2m16s here." \
+    "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')"
+  is "raise hook: answers as PreToolUse" "PreToolUse" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')"
+  # Raising a limit is not approving the call: that stays the person's.
+  is "raise hook: makes no permission decision" "false" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput | has("permissionDecision")')"
+  is "raise hook: and nothing else at the top" "hookSpecificOutput" "$(printf '%s' "$out" | jq -r 'keys | join(" ")')"
+  is "raise hook: a short limit Claude set itself is raised too" "from 1m00s to 3m30s" \
+    "$(rl_call 'bash tests/run.sh' '{"timeout":60000}' | jq -r '.hookSpecificOutput.additionalContext' | sed 's/.*limit \(from .* to [^:]*\):.*/\1/')"
+  is "raise hook: a limit that is long enough is left" "" "$(rl_call 'bash tests/run.sh' '{"timeout":300000}')"
+  is "raise hook: a background call is left" "" "$(rl_call 'bash tests/run.sh' '{"run_in_background":true}')"
+  is "raise hook: a command the memory does not know is left" "" "$(rl_call 'make')"
+  is "raise hook: a chain has no key, so is left" "" "$(rl_call 'sleep 5; bash tests/run.sh')"
+  is "raise hook: another tool is left" "" "$(rl_call 'bash tests/run.sh' '' '{"tool_name":"Read"}')"
+  is "raise hook: the cap is BASH_MAX_TIMEOUT_MS" "150000" \
+    "$(BASH_MAX_TIMEOUT_MS=150000 rl_call 'bash tests/run.sh' | jq -r '.hookSpecificOutput.updatedInput.timeout')"
+  is "raise hook: the limit is BASH_DEFAULT_TIMEOUT_MS when the call names none" "" \
+    "$(BASH_DEFAULT_TIMEOUT_MS=300000 rl_call 'bash tests/run.sh')"
+  # The change happened to the subagent's own call, so it is told whatever SUBAGENTS says.
+  fresh 'SUBAGENTS=off'; rl_slow; rl_prompt
+  is "raise hook: a subagent's call is raised too" "210000" \
+    "$(rl_call 'bash tests/run.sh' '' '{"agent_id":"sub1"}' | jq -r '.hookSpecificOutput.updatedInput.timeout')"
+  rl_call 'bash tests/run.sh' >/dev/null; rl_rc=$?
+  is "raise hook: exits 0 when it raises" "0" "$rl_rc"
+  rl_call 'make' >/dev/null; rl_rc=$?
+  is "raise hook: exits 0 when it does not" "0" "$rl_rc"
+
+  fresh; rl_row 'npx playwright test' 120010 limit; rl_prompt
+  is "raise hook: a command only ever stopped gets twice the limit" \
+    "Timestamps raised this call's limit from 2m00s to 4m00s: npx playwright test was stopped at 2m00s here and has not been seen to finish." \
+    "$(rl_call 'npx playwright test' | jq -r '.hookSpecificOutput.additionalContext')"
+
+  fresh 'RAISE_LIMIT=off'; rl_slow; rl_prompt
+  is "raise hook: RAISE_LIMIT=off raises nothing" "" "$(rl_call 'bash tests/run.sh')"
+  fresh 'COMMAND_MEMORY=off'; rl_slow; rl_prompt
+  is "raise hook: COMMAND_MEMORY=off raises nothing" "" "$(rl_call 'bash tests/run.sh')"
+  # A call is never changed where the plugin may not say so.
+  fresh 'INJECT_CONTEXT=false'; rl_slow; rl_prompt
+  is "raise hook: INJECT_CONTEXT=false raises nothing" "" "$(rl_call 'bash tests/run.sh')"
+  fresh 'ENABLED=off'; rl_slow; rl_prompt
+  is "raise hook: ENABLED=off raises nothing" "" "$(rl_call 'bash tests/run.sh')"
+  # A session that has not sent a prompt since the update has nothing staged.
+  fresh; rl_slow
+  ct_clear_state "rl"
+  is "raise hook: nothing staged, nothing raised" "" "$(rl_call 'bash tests/run.sh')"
+  # Codex's marked path only records a start time, as before.
+  fresh; rl_slow; rl_prompt
+  is "raise hook: Codex's path raises nothing" "" \
+    "$(jq -cn '{session_id: "rl", tool_name: "Bash", tool_use_id: "rl-c", tool_input: {command: "bash tests/run.sh"}}' | CT_CODEX_HOOK=1 CT_CLIENT=codex bash "$SCRIPTS/pre-tool-use.sh")"
+
+  is "raise hook: bound to Bash calls before they run" "Bash pre-tool-use.sh" \
+    "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].command | split("/") | last | rtrimstr("\""))"' "$ROOT/hooks/hooks.json")"
+  is "raise hook: Codex's hook map is as it was" "0" "$(git -C "$ROOT" diff --quiet HEAD -- hooks/codex-hooks.json 2>/dev/null; echo $?)"
+else
+  for rl_label in "raised" "command" "arguments" "told" "event" "no decision" "top" "own limit" "long enough" "background" \
+                  "unknown" "chain" "other tool" "cap" "default" "subagent" "exit raised" "exit left" "stopped" "off" \
+                  "memory off" "inject off" "enabled off" "unstaged" "codex" "bound" "codex map"; do
+    skip "raise hook: $rl_label" "jq is not installed"
+  done
+fi
+
+echo
+echo "raise limit: the setting"
+
+fresh
+ct_load_config
+is "raise setting: on by default" "on" "$CT_RAISE_LIMIT"
+bash "$SCRIPTS/setup.sh" --raise-limit=off >/dev/null 2>&1
+ct_load_config
+is "raise setting: --raise-limit=off writes it" "off" "$CT_RAISE_LIMIT"
+contains "raise setting: --show lists it" "Raise limit     off" "$(bash "$SCRIPTS/setup.sh" --show)"
+refutes "raise setting: a value that is not on or off is refused" bash "$SCRIPTS/setup.sh" --raise-limit=maybe
+fresh
 
 echo
 echo "command memory: report"
