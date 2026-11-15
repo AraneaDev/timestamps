@@ -931,6 +931,9 @@ ct_prune_state() {
 # Keep the duration memory small: the last 20 runs of each command in each
 # project, nothing older than 90 days, and 5,000 lines at most, newest kept.
 # Anything that is not a whole five-field line is dropped on the way.
+#
+# A line is epoch, project, key, milliseconds and outcome: ok, fail, or limit
+# for a call stopped at its time limit.
 #   $1 the file   $2 now (epoch)
 #
 # Written to a temp file and moved into place, so a reader never sees half a
@@ -942,7 +945,7 @@ ct_prune_commands() {
   case "$now" in ''|*[!0-9]*) return 0 ;; esac
   tmp="$file.$$"
   if awk -F '\t' -v cutoff="$(( now - 7776000 ))" '
-      NF == 5 && $1 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && ($5 == "ok" || $5 == "fail") && $1 + 0 >= cutoff {
+      NF == 5 && $1 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && ($5 == "ok" || $5 == "fail" || $5 == "limit") && $1 + 0 >= cutoff {
         line[++n] = $0; k[n] = $2 "\t" $3
       }
       END {
@@ -958,11 +961,18 @@ ct_prune_commands() {
 }
 
 # Per command in one project, over its last 20 runs: key, runs, median ms,
-# last ms and failures, tab-separated, slowest median first.
+# last ms, failures, stopped runs and the limit they were stopped at,
+# tab-separated, slowest median first.
 #   $1 the memory file   $2 project   $3 "all" to list every project instead,
 #   with the project as an extra first column
 # The median of an even count is the mean of the middle two, rounded down.
 # Rows that pruning would drop are skipped here too.
+#
+# A run stopped at its limit lasted as long as the limit, not as long as the
+# command. So runs, median, last and failures cover finished runs only (ok
+# and fail), stopped runs are counted on their own, and the limit is the
+# duration of the newest of them, 0 when there is none. A command only ever
+# stopped is still listed, with zeroes for the figures it has no runs for.
 ct_command_stats() {
   local file="${1:-}" project="${2:-}" mode="${3:-}" col=3
   [ -r "$file" ] || return 0
@@ -975,21 +985,24 @@ ct_command_stats() {
     [ -n "$project" ] || return 0
   fi
   awk -F '\t' -v want="$project" -v mode="$mode" '
-    NF == 5 && $1 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && ($5 == "ok" || $5 == "fail") \
+    NF == 5 && $1 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && ($5 == "ok" || $5 == "fail" || $5 == "limit") \
       && (mode == "all" || $2 == want) {
       id = (mode == "all") ? $2 "\t" $3 : $3
-      c = ++n[id]; v[id, c] = $4; bad[id, c] = ($5 == "fail"); last[id] = $4
+      c = ++n[id]; v[id, c] = $4; o[id, c] = $5
     }
     END {
       for (id in n) {
         # The last 20 runs only, the window pruning keeps, so the figures do
         # not depend on whether a session end has pruned the file yet.
         first = (n[id] > 20) ? n[id] - 19 : 1
-        m = 0; fails = 0
-        for (i = first; i <= n[id]; i++) { a[++m] = v[id, i] + 0; fails += bad[id, i] }
+        m = 0; fails = 0; stopped = 0; lim = 0; last = 0
+        for (i = first; i <= n[id]; i++) {
+          if (o[id, i] == "limit") { stopped++; lim = v[id, i] + 0 }
+          else { a[++m] = v[id, i] + 0; fails += (o[id, i] == "fail"); last = v[id, i] + 0 }
+        }
         for (i = 2; i <= m; i++) { x = a[i]; j = i - 1; while (j >= 1 && a[j] > x) { a[j + 1] = a[j]; j-- } a[j + 1] = x }
-        med = (m % 2) ? a[(m + 1) / 2] : int((a[m / 2] + a[m / 2 + 1]) / 2)
-        printf "%s\t%d\t%d\t%d\t%d\n", id, m, med, last[id], fails
+        med = (m == 0) ? 0 : (m % 2) ? a[(m + 1) / 2] : int((a[m / 2] + a[m / 2 + 1]) / 2)
+        printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\n", id, m, med, last, fails, stopped, lim
       }
     }' "$file" | sort -t "$(printf '\t')" -k"$col","$col"nr
   return 0

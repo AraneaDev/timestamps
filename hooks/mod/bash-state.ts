@@ -69,7 +69,7 @@ export async function readCommandsFile(h: Host): Promise<string> {
   try {
     const path =
       (await h.env('CLAUDE_TIMESTAMP_COMMANDS')) ||
-      `${(await h.env('HOME')) ?? ''}/.claude/claude-timestamp-commands.tsv`
+      `${(await h.env('HOME')) ?? ''}/.claude/claude-timestamp-commands-v2.tsv`
     return await h.read(path)
   } catch {
     return ''

@@ -7,18 +7,24 @@ const MIN_RUNS = 3
 
 export function usualSeconds(tsv: string, project: string | undefined, key: string): number | undefined {
   if (!key || !project || project === '-') return undefined
-  const runs: number[] = []
+  const runs: { ms: number; isFinished: boolean }[] = []
   for (const line of tsv.split('\n')) {
     const f = line.split('\t')
     if (f.length !== 5) continue
     const [epoch = '', where, name, ms = '', outcome] = f
     if (!/^[0-9]+$/.test(epoch) || !/^[0-9]+$/.test(ms)) continue
-    if (outcome !== 'ok' && outcome !== 'fail') continue
+    if (outcome !== 'ok' && outcome !== 'fail' && outcome !== 'limit') continue
     if (where !== project || name !== key) continue
-    runs.push(Number(ms))
+    runs.push({ ms: Number(ms), isFinished: outcome !== 'limit' })
   }
-  if (runs.length < MIN_RUNS) return undefined
-  const a = runs.slice(-WINDOW).sort((x, y) => x - y)
+  // A run stopped at its limit lasted as long as the limit, not as long as
+  // the command: it holds its place in the window and counts for nothing.
+  const a = runs
+    .slice(-WINDOW)
+    .filter(r => r.isFinished)
+    .map(r => r.ms)
+    .sort((x, y) => x - y)
+  if (a.length < MIN_RUNS) return undefined
   const m = a.length
   const at = (i: number) => a[i] ?? 0
   const med = m % 2 ? at((m - 1) / 2) : Math.floor((at(m / 2 - 1) + at(m / 2)) / 2)

@@ -83,7 +83,7 @@ test('the commands file honours CLAUDE_TIMESTAMP_COMMANDS', async () => {
 })
 
 test('the commands file defaults beside the config', async () => {
-  expect(await readCommandsFile(host({ '/home/u/.claude/claude-timestamp-commands.tsv': 'row' }))).toBe('row')
+  expect(await readCommandsFile(host({ '/home/u/.claude/claude-timestamp-commands-v2.tsv': 'row' }))).toBe('row')
 })
 
 test('an unreadable commands file reads empty', async () => {

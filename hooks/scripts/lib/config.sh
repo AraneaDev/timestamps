@@ -948,7 +948,7 @@ ct_history_path() {
 # The _var form assigns _CT_COMMANDS_PATH rather than printing, so the tool
 # hook pays no subshell for it on every recorded call.
 ct_commands_path_var() {
-  _CT_COMMANDS_PATH="${CLAUDE_TIMESTAMP_COMMANDS:-${HOME}/.claude/claude-timestamp-commands.tsv}"
+  _CT_COMMANDS_PATH="${CLAUDE_TIMESTAMP_COMMANDS:-${HOME}/.claude/claude-timestamp-commands-v2.tsv}"
 }
 
 ct_commands_path() {

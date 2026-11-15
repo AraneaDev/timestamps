@@ -18,7 +18,7 @@ function world(on: On, flags: Record<string, string> = {}, extraTsv: string[] = 
     [`${DIR}/s1.livetool`]: '60',
     [`${DIR}/s1.project`]: 'app',
     [`${DIR}/s1.cmdmem`]: 'on',
-    '/home/u/.claude/claude-timestamp-commands.tsv': [TSV, ...extraTsv].join('\n'),
+    '/home/u/.claude/claude-timestamp-commands-v2.tsv': [TSV, ...extraTsv].join('\n'),
     ...Object.fromEntries(Object.entries(flags).map(([k, v]) => [`${DIR}/s1.${k}`, v])),
   }
   on('session.id', () => ({ value: 's1' }))

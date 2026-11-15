@@ -7042,6 +7042,7 @@ bash "$SCRIPTS/setup.sh" --command-memory=off >/dev/null
 ct_load_config
 is "command memory: --command-memory is written" "off" "$CT_COMMAND_MEMORY"
 is "command memory: the file lives beside the history" "$WORK/commands.tsv" "$(ct_commands_path)"
+is "command memory: the default file is the v2 one" "/h/.claude/claude-timestamp-commands-v2.tsv" "$(unset CLAUDE_TIMESTAMP_COMMANDS; HOME=/h ct_commands_path)"
 contains "command memory: --show lists it" "Command memory  off" "$(bash "$SCRIPTS/setup.sh" --show)"
 
 echo
@@ -7242,11 +7243,11 @@ for i in 1 2 3; do
 done
 sc_row sc-proj 'gh run watch' 460000
 sc_row sc-proj 'gh run watch' 460000
-is "stats: median per key, slowest first" "gh run watch	2	460000	460000	0" "$(ct_command_stats "$sc_file" sc-proj | head -n 1)"
-is "stats: an even count takes the middle two" "x	4	2500	10000	0" \
+is "stats: median per key, slowest first" "gh run watch	2	460000	460000	0	0	0" "$(ct_command_stats "$sc_file" sc-proj | head -n 1)"
+is "stats: an even count takes the middle two" "x	4	2500	10000	0	0	0" \
   "$(printf '1\tq\tx\t1000\tok\n1\tq\tx\t2000\tok\n1\tq\tx\t3000\tok\n1\tq\tx\t10000\tok\n' > "$WORK/even.tsv"; ct_command_stats "$WORK/even.tsv" q)"
 # Only the last 20 runs count, also before session end prunes the rest.
-is "stats: only the last twenty runs count" "w	20	50	0	0" \
+is "stats: only the last twenty runs count" "w	20	50	0	0	0	0" \
   "$(awk 'BEGIN { for (i = 1; i <= 10; i++) printf "1\tq\tw\t0\tok\n"; for (i = 1; i <= 10; i++) printf "1\tq\tw\t100\tok\n"; printf "1\tq\tw\t0\tok\n" }' > "$WORK/window.tsv"; ct_command_stats "$WORK/window.tsv" q)"
 is "stats: all projects carry the project first" "other	make" "$(ct_command_stats "$sc_file" "" all | head -n 1 | cut -f1-2)"
 is "note: three at most, at least three runs, over the threshold, this project only" \
@@ -7254,6 +7255,34 @@ is "note: three at most, at least three runs, over the threshold, this project o
   "$(ct_slow_commands_note "$sc_file" sc-proj 60)"
 is "note: a zero threshold says nothing" "" "$(ct_slow_commands_note "$sc_file" sc-proj 0)"
 is "note: no project says nothing" "" "$(ct_slow_commands_note "$sc_file" - 60)"
+
+# A run stopped at its limit lasted as long as the limit, not as long as the
+# command: counted apart, and kept out of the usual figure.
+lm_now=2000000000
+{
+  for lm_ms in 100000 110000 120000 130000; do printf '%s\tq\tt\t%s\tok\n' "$lm_now" "$lm_ms"; done
+  printf '%s\tq\tt\t90000\tfail\n' "$lm_now"
+  printf '%s\tq\tt\t120010\tlimit\n' "$lm_now"
+  printf '%s\tq\tt\t300020\tlimit\n' "$lm_now"
+  printf 'x\ty\n'
+} > "$WORK/lim.tsv"
+for _ in 1 2 3; do printf '%s\tq\tu\t120010\tlimit\n' "$lm_now"; done > "$WORK/limonly.tsv"
+is "stats: finished runs only, stopped apart" "t	5	110000	90000	1	2	300020" "$(ct_command_stats "$WORK/lim.tsv" q)"
+is "stats: a key only ever stopped is listed" "u	0	0	0	0	3	120010" "$(ct_command_stats "$WORK/limonly.tsv" q)"
+is "usual: stopped runs do not move it" "110" "$(ct_command_usual "$WORK/lim.tsv" q t)"
+is "usual: stopped runs do not count toward three" "" "$(ct_command_usual "$WORK/limonly.tsv" q u)"
+cp "$WORK/lim.tsv" "$WORK/lim-pruned.tsv"
+ct_prune_commands "$WORK/lim-pruned.tsv" "$lm_now"
+is "prune: stopped lines are kept, garbage is dropped" "7" "$(wc -l < "$WORK/lim-pruned.tsv" | tr -d ' ')"
+
+# The memory before this format could not be corrected, so it is not read,
+# and its default file is cleared away. A path the user chose is theirs.
+mkdir -p "$WORK/home/.claude"
+: > "$WORK/home/.claude/claude-timestamp-commands.tsv"
+touch "$CLAUDE_TIMESTAMP_COMMANDS"
+printf '{"session_id":"legacy"}' | HOME="$WORK/home" bash "$SCRIPTS/session-end.sh" > /dev/null 2>&1 || :
+is "session end: the old default memory file is removed" "gone" "$([ -e "$WORK/home/.claude/claude-timestamp-commands.tsv" ] && echo there || echo gone)"
+is "session end: an overridden path is never removed" "there" "$([ -e "$CLAUDE_TIMESTAMP_COMMANDS" ] && echo there || echo gone)"
 
 if command -v jq >/dev/null 2>&1; then
   mkdir -p "$WORK/sc-proj"
