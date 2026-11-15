@@ -287,7 +287,7 @@ function overview(data: PaneData, view: PaneView, w: number, clock: Clock): Body
 
   const byTurn = callsByTurn(data)
   const longest = [...data.turns].sort((a, b) => b.secs - a.secs).slice(0, 5)
-  body.rows.push(rule('longest', '⧖', 'Longest turns', data.turns.length > 0 ? plural(data.turns.length, 'turn') : '', w), blank('gap-longest'))
+  body.rows.push(rule('longest', '≡', 'Longest turns', data.turns.length > 0 ? plural(data.turns.length, 'turn') : '', w), blank('gap-longest'))
   if (longest.length === 0) body.rows.push(dimText('longest-none', ' No turns recorded yet.'))
   else {
     const most = Math.max(1, ...longest.map(t => t.secs))
@@ -428,7 +428,7 @@ function split(list: Row[], detail: Row[], listW: number, isWide: boolean): Row[
 function turns(data: PaneData, view: PaneView, w: number, room: number, clock: Clock): Body {
   const order = turnOrder(data, view.isByTime)
   if (order.length === 0) {
-    return { rows: [rule('turns', '⧖', 'Turns', '', w), blank('gap-turns'), dimText('turns-none', ' No turns recorded yet in this session.')], targets: [] }
+    return { rows: [rule('turns', '≡', 'Turns', '', w), blank('gap-turns'), dimText('turns-none', ' No turns recorded yet in this session.')], targets: [] }
   }
   const isWide = w >= 100
   const listW = isWide ? Math.min(60, Math.floor(w * 0.46)) : w
@@ -437,7 +437,7 @@ function turns(data: PaneData, view: PaneView, w: number, room: number, clock: C
   const most = Math.max(1, ...order.map(t => t.secs))
   const barW = Math.max(0, listW - 46)
   const list: Row[] = [
-    rule('turns', '⧖', 'Turns', `${order.length} · ${view.isByTime ? 'longest first' : 'as they happened'}`, listW),
+    rule('turns', '≡', 'Turns', `${order.length} · ${view.isByTime ? 'longest first' : 'as they happened'}`, listW),
     blank('gap-turns'),
     dimText('turns-head', `  ${padEnd('#', 5)}${padEnd('start', 5)}${padStart('took', 9)}${' '.repeat(barW >= 4 ? barW + 2 : 0)}${padStart('in calls', 10)}`),
   ]

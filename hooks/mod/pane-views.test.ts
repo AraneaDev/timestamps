@@ -100,7 +100,7 @@ test('overview: the marker walks the rows that open a turn, and o says which', (
 
 test('turns, stacked: the list, then the marked turn with its calls in the order they ran', () => {
   const drawn = draw(at('turns', 1), 90)
-  expect(said(rowOf(drawn, '── ⧖ Turns'))).toBe(' ─ ⧖ Turns ─ 3 · as they happened ─')
+  expect(said(rowOf(drawn, '── ≡ Turns'))).toBe(' ─ ≡ Turns ─ 3 · as they happened ─')
   expect(said(rowOf(drawn, '› #2'))).toBe(' › #2 22:16 30m00s ━ 6m37s ▲1 ■1 ✗1')
   expect(rowOf(drawn, '#3   23:00').endsWith('running')).toBe(true)
   expect(said(rowOf(drawn, '── ◆ #2'))).toBe(' ─ ◆ #2 · 22:16 → 22:46 ─ ended normally ─')
@@ -118,7 +118,7 @@ test('turns, stacked: the list, then the marked turn with its calls in the order
 
 test('turns, wide: the detail sits beside the list', () => {
   const drawn = draw(at('turns', 1), 160)
-  const row = rowOf(drawn, '── ⧖ Turns')
+  const row = rowOf(drawn, '── ≡ Turns')
   expect(row.includes('── ◆ #2 · 22:16 → 22:46')).toBe(true)
   expect(rowOf(drawn, '› #2').includes('30m00s')).toBe(true)
 })
@@ -126,7 +126,7 @@ test('turns, wide: the detail sits beside the list', () => {
 test('turns: longest first reorders the list, and a turn is found in either order', () => {
   expect(turnOrder(data, true).map(t => t.n)).toEqual([2, 3, 1])
   expect([markerOfTurn(data, false, 3), markerOfTurn(data, true, 3), markerOfTurn(data, true, 99)]).toEqual([2, 1, 0])
-  expect(rowOf(draw(at('turns', 0, true), 90), '── ⧖ Turns').includes('longest first')).toBe(true)
+  expect(rowOf(draw(at('turns', 0, true), 90), '── ≡ Turns').includes('longest first')).toBe(true)
   expect(rowOf(draw(at('turns', 0, true), 90), 'j: ↓').includes('s: as they happened')).toBe(true)
 })
 
