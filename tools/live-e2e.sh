@@ -7,7 +7,7 @@
 #   tools/live-e2e.sh [seconds]     how long the command runs (default 25)
 #
 # Command history, turn history and config are throwaway files. The command
-# history holds three 8s runs of `timeout`, so the line under the call should appear after ~12s (1.5 x the usual time)
+# history holds three 8s runs of `tail`, the command under the timeout, so the line under the call should appear after ~12s (1.5 x the usual time)
 # and say "usually ~8s". The person's own files are never written.
 set -u
 
@@ -20,7 +20,7 @@ cmd="timeout $secs tail -f /dev/null; echo \"exit: \$?\""
 
 now=$(date +%s)
 for i in 1 2 3; do
-  printf '%s\t%s\ttimeout\t8000\tok\n' "$((now - 100 + i))" "$project"
+  printf '%s\t%s\ttail\t8000\tok\n' "$((now - 100 + i))" "$project"
 done > "$work/commands.tsv"
 # The person's settings, with the slow-tool note at 20s so bash's own note
 # fires too, and LIVE on.
@@ -82,10 +82,10 @@ if grep -qE "That Bash call took [0-9]+s \(usually 8s\)" "$work/debug.txt" 2>/de
 else
   echo "  FAIL bash's note quotes the same usual time"; fail=$((fail + 1))
 fi
-if tail -1 "$work/commands.tsv" | grep -qP "\ttimeout\t[0-9]+\tok$"; then
-  echo "  ok   the run is remembered under timeout"; pass=$((pass + 1))
+if tail -1 "$work/commands.tsv" | grep -qP "\ttail\t[0-9]+\tok$"; then
+  echo "  ok   the run is remembered under the wrapped command"; pass=$((pass + 1))
 else
-  echo "  FAIL the run is remembered under timeout ($(tail -1 "$work/commands.tsv"))"; fail=$((fail + 1))
+  echo "  FAIL the run is remembered under the wrapped command ($(tail -1 "$work/commands.tsv"))"; fail=$((fail + 1))
 fi
 if grep -q '⚠' "$work"/t*.txt; then
   echo "  FAIL no ⚠ notice is drawn"; fail=$((fail + 1))

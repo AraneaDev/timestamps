@@ -23,6 +23,10 @@
 # paths, home-relative paths, URLs and numbers are never kept, and the first
 # argument that is one of those ends the key.
 #
+# A call has one duration, so it gets a key only when one command in it can
+# have taken the time. Anything else has no key and is not remembered: a
+# wrong entry misleads, a missing one costs nothing.
+#
 # A string rather than a file so post-tool-use.sh can prepend it to the one jq
 # call it already makes. Written without regex builtins, which a jq built
 # without oniguruma lacks; 34 and 39 are the double and single quote, and
@@ -31,16 +35,31 @@
 # a $ (36) they open ${...} or $(...) instead, which is skipped like a quote:
 # it belongs to the word it sits in, so NODE_ENV=${ENV} stays one prefix.
 #
-#   first line only (heredocs) -> quoted text blanked -> last segment of
-#   && || ; -> first segment of | -> leading VAR=x, env, time, sudo, nice,
-#   command stripped -> basename of the program -> at most two arguments made
-#   of [A-Za-z0-9._/@:+-], not starting with - / ~, without :// :/ or ..,
-#   not all digits, no @ except a leading one (a scoped package, never
-#   user@host), and not a 16+ character run of letters and digits without a /
-#   (the shape of a token) -> 60 characters. echo and printf keep no
-#   arguments: what they print is data, often a token piped into a CLI. Only
-#   the first 40 words are looked at, so a huge command costs no more than a
-#   short one.
+#   first line only -> quoted text blanked -> split on && || ; -> first
+#   segment of | -> leading VAR=x, env, time, sudo, nice, command stripped,
+#   and the wrappers nohup, stdbuf (with its options) and timeout (with its
+#   options and duration) seen through -> each piece is one of
+#     ignored  nothing left, or cd pushd popd export set unset source . echo
+#              printf true : exit: setup before the command or a status
+#              report after it
+#     control  until while for do done if then else elif fi case esac: a loop
+#              or a branch, whose time belongs to no single command
+#     real     anything else, sleep included
+#   -> a key only for exactly one real piece and no control piece.
+#
+# The real piece is keyed by the basename of its program and at most two
+# arguments made of [A-Za-z0-9._/@:+-], not starting with - / ~, without ://
+# :/ or .., not all digits, no @ except a leading one (a scoped package,
+# never user@host), and not a 16+ character run of letters and digits without
+# a / (the shape of a token) -> 60 characters. It has no key when its program
+# is not plain, is xargs (its input decides the cost) or is a shell given -c
+# (the command is the quoted text, which is never read). Only the first 40
+# words of a piece are looked at, so a huge command costs no more than a
+# short one.
+#
+# Only the first line is read. Further non-blank lines are a heredoc body
+# when the first line opens one (<<); otherwise they are a script whose other
+# commands were never looked at, and the call has no key.
 # shellcheck disable=SC2016,SC2034  # jq source, not shell; read by the hooks that source this file
 CT_JQ_CMDKEY='def ct_cmdkey:
   def unquote:
@@ -64,24 +83,49 @@ CT_JQ_CMDKEY='def ct_cmdkey:
       or startswith("/") or startswith("~") or digits or (plain | not)
       or (contains("@") and (startswith("@") | not)) or contains(":/")
       or (length >= 16 and (contains("/") | not) and letters and numbers);
+  def base: (split("/") | last) // "";
   def prefix: contains("=") or . == "env" or . == "time" or . == "sudo" or . == "nice" or . == "command";
-  def strip: if length > 0 and (.[0] | prefix) then .[1:] | strip else . end;
+  def dashes: if length > 0 and (.[0] | startswith("-")) then .[1:] | dashes else . end;
+  # What follows timeout: its options, two of which take a value as a word of
+  # their own, then the duration.
+  def limit:
+    if length == 0 then .
+    elif .[0] == "-s" or .[0] == "--signal" or .[0] == "-k" or .[0] == "--kill-after" then .[2:] | limit
+    elif (.[0] | startswith("-")) then .[1:] | limit
+    else .[1:] end;
+  def strip:
+    if length == 0 then .
+    elif (.[0] | prefix) then .[1:] | strip
+    elif (.[0] | base) == "nohup" then .[1:] | strip
+    elif (.[0] | base) == "stdbuf" then .[1:] | dashes | strip
+    elif (.[0] | base) == "timeout" then .[1:] | limit | strip
+    else . end;
+  def ignored: . as $w | ["cd", "pushd", "popd", "export", "set", "unset", "source", ".", "echo", "printf", "true", ":", "exit"] | index($w) != null;
+  def control: . as $w | ["until", "while", "for", "do", "done", "if", "then", "else", "elif", "fi", "case", "esac"] | index($w) != null;
   def take: if length == 0 or (.[0] | stops) then [] else [.[0]] + (.[1:] | take) end;
-  def segkey:
+  # One piece of the line: {k: "i"} ignored, {k: "c"} control, or
+  # {k: "r", key: ...} a real command, its key empty when it cannot be keyed.
+  def piece:
     ((split("|") | .[0]) // "") | words | .[0:40] | strip
-    | if length == 0 then ""
-      else (.[0] | split("/") | last) as $prog
-        | if ($prog | plain | not) or ($prog | startswith("-")) then ""
-          elif $prog == "echo" or $prog == "printf" then $prog
-          else ([$prog] + (.[1:3] | take)) | join(" ") | .[0:60] end
+    | if length == 0 then {k: "i"}
+      else (.[0] | base) as $prog
+        | if ($prog | ignored) then {k: "i"}
+          elif ($prog | control) then {k: "c"}
+          elif ($prog | plain | not) or ($prog | startswith("-")) or $prog == "xargs"
+               or (($prog == "bash" or $prog == "sh" or $prog == "zsh") and .[1] == "-c") then {k: "r", key: ""}
+          else {k: "r", key: (([$prog] + (.[1:3] | take)) | join(" ") | .[0:60])} end
       end;
-  # A trailing status report (; echo "exit: $?") is not the command that took
-  # the time: the last segment that is something else names the call.
-  def trailer: . == "echo" or . == "printf" or . == "true" or . == ":" or . == "exit";
+  def blank: explode | all(.[]; . == 32 or . == 9 or . == 13);
   if type != "string" then "" else
-    ((split("\n") | .[0]) // "") | unquote | split("\t") | join(" ")
-    | [splitall(["&&", "||", ";"])[] | select(words | length > 0) | segkey]
-    | ((map(select(trailer | not)) | last) // last // "")
+    split("\n") as $lines
+    | ($lines[0] // "") as $first
+    | if ($lines[1:] | any(.[]; blank | not)) and ($first | contains("<<") | not) then ""
+      else
+        $first | unquote | split("\t") | join(" ")
+        | [splitall(["&&", "||", ";"])[] | select(words | length > 0) | piece]
+        | if any(.[]; .k == "c") then ""
+          else map(select(.k == "r")) | if length == 1 then .[0].key else "" end end
+      end
   end;'
 
 # Where per-session state lives.

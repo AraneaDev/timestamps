@@ -7090,8 +7090,8 @@ body line")"
   is "key: a scoped package is kept" "npm install @scope/pkg" "$(ck 'npm install @scope/pkg')"
   is "key: a test node id is kept" "pytest spec/a.py::test_b" "$(ck 'pytest spec/a.py::test_b')"
   # echo and printf carry data, often a token piped into a CLI.
-  is "key: echo keeps no arguments" "echo" "$(ck 'echo ghp_abcdef1234567890 | gh auth login --with-token')"
-  is "key: printf keeps no arguments" "printf" "$(ck 'printf secretvalue | docker login --password-stdin')"
+  is "key: echo into a pipe is not remembered" "" "$(ck 'echo ghp_abcdef1234567890 | gh auth login --with-token')"
+  is "key: printf into a pipe is not remembered" "" "$(ck 'printf secretvalue | docker login --password-stdin')"
   is "key: a long token-shaped argument ends it" "vault login" "$(ck 'vault login hvs.CAESIJ8abc123')"
   # A command of thousands of words is keyed without walking all of them.
   ck_long="git add$(printf ' f%d' $(seq 1 3000))"
