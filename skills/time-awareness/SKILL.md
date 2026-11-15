@@ -1,6 +1,6 @@
 ---
 name: time-awareness
-description: Use when a Timestamps system reminder or Codex hook context says how long a turn has run, that a tool call was slow, or that a conversation or project is resumed after a gap; when the user asks how long something took, when they started, or where their time went; and before writing a date into notes, memory, a commit or a document.
+description: Use when a Timestamps system reminder or Codex hook context says how long a turn has run, that a tool call was slow, or that a conversation or project is resumed after a gap; when the user asks how long something took, when they started, or where their time went; before saying that tests pass or work is verified; and before writing a date into notes, memory, a commit or a document.
 user-invocable: false
 ---
 
@@ -54,6 +54,59 @@ when a call was slow. Both come from measured runs in this project.
   near it, rather than polling every minute.
 - A run far over its usual figure is a reason to look (a hang, more input
   than expected), not a reason to wait longer.
+
+**`That Bash call was stopped at its 2m00s limit (finishes in ~2m16s when it does).`**
+means the call did not fail: it ran out of time. The same fact arrives at
+session start as `bash tests/run.sh ~2m16s (3 runs, 2 more stopped at the 2m00s limit)`
+or `npx playwright test stopped at its limit 3 times (limit 2m00s)`.
+
+- Run it next in the background, or with a `timeout` above the "finishes in"
+  figure. Do not retry it as it was: it will be stopped again.
+- With no "finishes in" figure, nobody has seen it finish. Run it in the
+  background and check on it, rather than guessing a longer limit.
+
+**`Timestamps raised this call's limit from 2m00s to 3m30s: bash tests/run.sh has taken up to 2m16s here.`**
+arrives with the result of a Bash call whose limit was too short for what
+the command has taken before. The call ran with the higher limit; nothing
+needs redoing.
+
+- The limit was only raised, to cover the longest run seen. If the call was
+  still stopped, the command now takes longer than it ever has: look at why
+  before running it again.
+- It does not move a call to the background. A command that takes minutes
+  still blocks the turn in the foreground, so prefer `run_in_background` for
+  those and keep working.
+- A `timeout` you set yourself above the figure is left alone.
+
+The memory behind these figures keeps a call only when one command in it can
+have taken the time. A chain of commands, a loop or a multi-line script is
+not remembered. When a command's duration is worth knowing, run it as a call
+of its own, with at most `cd`, a `timeout` in front and a pipe behind.
+
+## Before saying the work is verified
+
+**`Before this commit: bash tests/run.sh passed 48m12s ago, 9 files changed since; bash tools/check-docs.sh failed 12m05s ago, not run since.`**
+arrives after a commit, a push or a pull request, when a check you ran this
+session did not pass or files have changed since it ran.
+
+- Look at what changed. If it could affect the check, run the check again
+  before reporting, and amend or follow up if it fails.
+- If it could not (a comment, a document the check does not read), say that
+  the check ran before those edits rather than that everything passes.
+- A check that failed and was not run again is not a passing check, whatever
+  was fixed since.
+
+Without a commit there is no note. Before telling the user that tests pass,
+read the checks in the session report: every check, when it ran, and what
+has changed since.
+
+```bash
+setup="$(git rev-parse --show-toplevel 2>/dev/null || true)/hooks/scripts/setup.sh"
+if [ ! -f "$setup" ] && [ -n "${CLAUDE_SKILL_DIR:-}" ]; then
+  setup="${CLAUDE_SKILL_DIR}/../../hooks/scripts/setup.sh"
+fi
+bash "$setup" --session
+```
 
 ## Time in general
 

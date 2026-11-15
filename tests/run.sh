@@ -1575,6 +1575,11 @@ echo "stale PreToolUse binding"
 # give that stale binding something harmless to run. This test is what stops
 # someone deleting the shim before every supported version has stopped
 # binding PreToolUse; retire the test along with the shim, together.
+# Since then the file has work of its own again, raising a Bash call's limit
+# (see "raise limit: the hook"), and is bound to Bash calls only. A session
+# from before ad31d05 still reaches it for every tool, and one that has not
+# staged the raise flag must still find it silent: that is what the next
+# four assertions hold.
 asserts "the PreToolUse compatibility shim still exists" test -e "$SCRIPTS/pre-tool-use.sh"
 # Redirected from a file rather than piped in. The shim exits without ever
 # reading stdin, so a writer on the other end of a pipe can lose the race and
@@ -1672,7 +1677,7 @@ is "a rejected format cannot smuggle a second setting into the file" "on" "$CT_E
 # to be wrong, so flag twenty-one is covered the day it is added.
 fresh 'ENABLED=on'
 flag_table="$(sed -n '/^CT_FLAG_TABLE="$/,/^"$/p' "$SCRIPTS/setup.sh" | sed '1d;$d')"
-is "every setting has a flag in the table" "26" \
+is "every setting has a flag in the table" "28" \
   "$(printf '%s\n' "$flag_table" | grep -c '^[a-z]')"
 # shellcheck disable=SC2034  # t_rest is read to consume the rest of the row
 while read -r t_flag t_rest; do
@@ -6430,7 +6435,7 @@ is "stage: INJECT_CONTEXT=false stages no heartbeat" "0" "$(ct_read_flag stage-b
 is "stage: INJECT_CONTEXT=false stages no slow tool note" "0" "$(ct_read_flag stage-b slowtool)"
 refutes "stage: no timing and no notes keeps the gate shut" test -e "$(ct_state_file stage-b).timing-on"
 
-fresh 'HEARTBEAT_AFTER=0' 'SLOW_TOOL_AFTER=0' 'COMMAND_MEMORY=off'
+fresh 'HEARTBEAT_AFTER=0' 'SLOW_TOOL_AFTER=0' 'COMMAND_MEMORY=off' 'CHECK_NOTE=off'
 printf '{"session_id":"stage-c"}' | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null
 refutes "stage: both notes at 0 keep the gate shut" test -e "$(ct_state_file stage-c).timing-on"
 
@@ -7042,6 +7047,7 @@ bash "$SCRIPTS/setup.sh" --command-memory=off >/dev/null
 ct_load_config
 is "command memory: --command-memory is written" "off" "$CT_COMMAND_MEMORY"
 is "command memory: the file lives beside the history" "$WORK/commands.tsv" "$(ct_commands_path)"
+is "command memory: the default file is the v2 one" "/h/.claude/claude-timestamp-commands-v2.tsv" "$(unset CLAUDE_TIMESTAMP_COMMANDS; HOME=/h ct_commands_path)"
 contains "command memory: --show lists it" "Command memory  off" "$(bash "$SCRIPTS/setup.sh" --show)"
 
 echo
@@ -7090,8 +7096,8 @@ body line")"
   is "key: a scoped package is kept" "npm install @scope/pkg" "$(ck 'npm install @scope/pkg')"
   is "key: a test node id is kept" "pytest spec/a.py::test_b" "$(ck 'pytest spec/a.py::test_b')"
   # echo and printf carry data, often a token piped into a CLI.
-  is "key: echo keeps no arguments" "echo" "$(ck 'echo ghp_abcdef1234567890 | gh auth login --with-token')"
-  is "key: printf keeps no arguments" "printf" "$(ck 'printf secretvalue | docker login --password-stdin')"
+  is "key: echo into a pipe is not remembered" "" "$(ck 'echo ghp_abcdef1234567890 | gh auth login --with-token')"
+  is "key: printf into a pipe is not remembered" "" "$(ck 'printf secretvalue | docker login --password-stdin')"
   is "key: a long token-shaped argument ends it" "vault login" "$(ck 'vault login hvs.CAESIJ8abc123')"
   # A command of thousands of words is keyed without walking all of them.
   ck_long="git add$(printf ' f%d' $(seq 1 3000))"
@@ -7242,11 +7248,11 @@ for i in 1 2 3; do
 done
 sc_row sc-proj 'gh run watch' 460000
 sc_row sc-proj 'gh run watch' 460000
-is "stats: median per key, slowest first" "gh run watch	2	460000	460000	0" "$(ct_command_stats "$sc_file" sc-proj | head -n 1)"
-is "stats: an even count takes the middle two" "x	4	2500	10000	0" \
+is "stats: median per key, slowest first" "gh run watch	2	460000	460000	0	0	0	460000" "$(ct_command_stats "$sc_file" sc-proj | head -n 1)"
+is "stats: an even count takes the middle two" "x	4	2500	10000	0	0	0	10000" \
   "$(printf '1\tq\tx\t1000\tok\n1\tq\tx\t2000\tok\n1\tq\tx\t3000\tok\n1\tq\tx\t10000\tok\n' > "$WORK/even.tsv"; ct_command_stats "$WORK/even.tsv" q)"
 # Only the last 20 runs count, also before session end prunes the rest.
-is "stats: only the last twenty runs count" "w	20	50	0	0" \
+is "stats: only the last twenty runs count" "w	20	50	0	0	0	0	100" \
   "$(awk 'BEGIN { for (i = 1; i <= 10; i++) printf "1\tq\tw\t0\tok\n"; for (i = 1; i <= 10; i++) printf "1\tq\tw\t100\tok\n"; printf "1\tq\tw\t0\tok\n" }' > "$WORK/window.tsv"; ct_command_stats "$WORK/window.tsv" q)"
 is "stats: all projects carry the project first" "other	make" "$(ct_command_stats "$sc_file" "" all | head -n 1 | cut -f1-2)"
 is "note: three at most, at least three runs, over the threshold, this project only" \
@@ -7254,6 +7260,57 @@ is "note: three at most, at least three runs, over the threshold, this project o
   "$(ct_slow_commands_note "$sc_file" sc-proj 60)"
 is "note: a zero threshold says nothing" "" "$(ct_slow_commands_note "$sc_file" sc-proj 0)"
 is "note: no project says nothing" "" "$(ct_slow_commands_note "$sc_file" - 60)"
+
+# A run stopped at its limit lasted as long as the limit, not as long as the
+# command: counted apart, and kept out of the usual figure.
+lm_now=2000000000
+{
+  for lm_ms in 100000 110000 120000 130000; do printf '%s\tq\tt\t%s\tok\n' "$lm_now" "$lm_ms"; done
+  printf '%s\tq\tt\t90000\tfail\n' "$lm_now"
+  printf '%s\tq\tt\t120010\tlimit\n' "$lm_now"
+  printf '%s\tq\tt\t300020\tlimit\n' "$lm_now"
+  printf 'x\ty\n'
+} > "$WORK/lim.tsv"
+for _ in 1 2 3; do printf '%s\tq\tu\t120010\tlimit\n' "$lm_now"; done > "$WORK/limonly.tsv"
+is "stats: finished runs only, stopped apart" "t	5	110000	90000	1	2	300020	130000" "$(ct_command_stats "$WORK/lim.tsv" q)"
+is "stats: a key only ever stopped is listed" "u	0	0	0	0	3	120010	0" "$(ct_command_stats "$WORK/limonly.tsv" q)"
+is "usual: stopped runs do not move it" "110" "$(ct_command_usual "$WORK/lim.tsv" q t)"
+is "usual: stopped runs do not count toward three" "" "$(ct_command_usual "$WORK/limonly.tsv" q u)"
+cp "$WORK/lim.tsv" "$WORK/lim-pruned.tsv"
+ct_prune_commands "$WORK/lim-pruned.tsv" "$lm_now"
+is "prune: stopped lines are kept, garbage is dropped" "7" "$(wc -l < "$WORK/lim-pruned.tsv" | tr -d ' ')"
+is "note: stopped runs are counted beside the usual" \
+  "Usually slow in this project: t ~1m50s (5 runs, 2 more stopped at the 5m00s limit)." "$(ct_slow_commands_note "$WORK/lim.tsv" q 60)"
+is "note: a command only ever stopped is named" \
+  "Usually slow in this project: u stopped at its limit 3 times (limit 2m00s)." "$(ct_slow_commands_note "$WORK/limonly.tsv" q 60)"
+printf '%s\tq\tv\t120010\tlimit\n' "$lm_now" > "$WORK/limone.tsv"
+is "note: one stopped run alone says nothing" "" "$(ct_slow_commands_note "$WORK/limone.tsv" q 60)"
+is "note: stopped-only still obeys a zero threshold" "" "$(ct_slow_commands_note "$WORK/limonly.tsv" q 0)"
+# Usually quick, but stopped twice at a limit shorter than it needs: named,
+# though its usual time is under the threshold.
+{
+  for _ in 1 2 3; do printf '%s\tq\tw\t50000\tok\n' "$lm_now"; done
+  for _ in 1 2; do printf '%s\tq\tw\t30010\tlimit\n' "$lm_now"; done
+} > "$WORK/limquick.tsv"
+is "note: a quick command stopped twice is named with both" \
+  "Usually slow in this project: w ~50s (3 runs, 2 more stopped at the 30s limit)." "$(ct_slow_commands_note "$WORK/limquick.tsv" q 60)"
+# Three at most, the usually slow before the merely stopped.
+cat "$WORK/lim.tsv" "$WORK/limquick.tsv" > "$WORK/limmix.tsv"
+for lm_key in a b; do
+  for _ in 1 2 3; do printf '%s\tq\t%s\t400000\tok\n' "$lm_now" "$lm_key"; done
+done >> "$WORK/limmix.tsv"
+is "note: the usually slow come before the stopped, three in all" \
+  "Usually slow in this project: a ~6m40s (3 runs), b ~6m40s (3 runs), t ~1m50s (5 runs, 2 more stopped at the 5m00s limit)." \
+  "$(ct_slow_commands_note "$WORK/limmix.tsv" q 60 | sed 's/b ~6m40s (3 runs), a ~6m40s (3 runs)/a ~6m40s (3 runs), b ~6m40s (3 runs)/')"
+
+# The memory before this format could not be corrected, so it is not read,
+# and its default file is cleared away. A path the user chose is theirs.
+mkdir -p "$WORK/home/.claude"
+: > "$WORK/home/.claude/claude-timestamp-commands.tsv"
+touch "$CLAUDE_TIMESTAMP_COMMANDS"
+printf '{"session_id":"legacy"}' | HOME="$WORK/home" bash "$SCRIPTS/session-end.sh" > /dev/null 2>&1 || :
+is "session end: the old default memory file is removed" "gone" "$([ -e "$WORK/home/.claude/claude-timestamp-commands.tsv" ] && echo there || echo gone)"
+is "session end: an overridden path is never removed" "there" "$([ -e "$CLAUDE_TIMESTAMP_COMMANDS" ] && echo there || echo gone)"
 
 if command -v jq >/dev/null 2>&1; then
   mkdir -p "$WORK/sc-proj"
@@ -7311,6 +7368,431 @@ else
 fi
 
 echo
+echo "command memory: stopped at the limit"
+
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$WORK/proj-l"
+  lm_prompt() { printf '{"session_id":"lm","cwd":"%s"}' "$WORK/proj-l" | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null; }
+  # $1 ms, $2 command, $3 extra tool_input fields, $4 extra top-level fields
+  # (both JSON objects, optional). A failure unless $4 says otherwise.
+  lm_call() {
+    jq -cn --argjson ms "$1" --arg c "$2" --argjson ti "${3:-null}" --argjson top "${4:-null}" \
+      '{session_id: "lm", tool_name: "Bash", hook_event_name: "PostToolUseFailure", duration_ms: $ms,
+        tool_input: ({command: $c} + ($ti // {}))} + ($top // {})' \
+      | bash "$SCRIPTS/post-tool-use.sh" | jq -r '.hookSpecificOutput.additionalContext // ""'
+  }
+  lm_row() { printf '%s\tproj-l\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "${3:-ok}" >> "$CLAUDE_TIMESTAMP_COMMANDS"; }
+  lm_last() { tail -n 1 "$CLAUDE_TIMESTAMP_COMMANDS" | cut -f2-5; }
+  lm_lines() { if [ -r "$CLAUDE_TIMESTAMP_COMMANDS" ]; then wc -l < "$CLAUDE_TIMESTAMP_COMMANDS" | tr -d ' '; else echo 0; fi; }
+
+  fresh; lm_prompt
+  # A limit shorter than SLOW_TOOL_AFTER that was hit is still a fact worth telling.
+  is "limit: the note names the limit" "That Bash call was stopped at its 2s limit." \
+    "$(lm_call 2024 'bash tests/run.sh' '{"timeout":2000}')"
+  is "limit: recorded as limit" "proj-l	bash tests/run.sh	2024	limit" "$(lm_last)"
+  lm_call 120010 'npm test' >/dev/null
+  is "limit: the default limit is two minutes" "proj-l	npm test	120010	limit" "$(lm_last)"
+  lm_call 40000 'npm test' '{"timeout":120000}' >/dev/null
+  is "limit: an early failure is a failure" "proj-l	npm test	40000	fail" "$(lm_last)"
+  # A limit of zero is no limit; taken literally, every failure would be past it.
+  lm_call 5000 'npm test' '{"timeout":0}' >/dev/null
+  is "limit: a zero timeout is not a limit" "proj-l	npm test	5000	fail" "$(lm_last)"
+  BASH_DEFAULT_TIMEOUT_MS=300000 lm_call 120010 'cargo build' >/dev/null
+  is "limit: an environment default moves the limit" "proj-l	cargo build	120010	fail" "$(lm_last)"
+  # What Claude Code itself says outranks a limit this hook had to work out.
+  is "limit: the failure text says it timed out" "That Bash call was stopped at its 30s limit." \
+    "$(BASH_DEFAULT_TIMEOUT_MS=300000 lm_call 30010 'make' '' '{"error":"Exit code 143\nCommand timed out after 30s"}')"
+  is "limit: and that is recorded" "proj-l	make	30010	limit" "$(lm_last)"
+  is "limit: only Bash has a limit" "That WebFetch call failed after 2m10s." \
+    "$(lm_call 130000 'x' '' '{"tool_name":"WebFetch"}')"
+  lm_before="$(lm_lines)"
+  lm_call 120010 'npm test' '{"run_in_background":true}' >/dev/null
+  is "limit: a background call is not recorded" "$lm_before" "$(lm_lines)"
+  lm_call 120010 'npm test' '' '{"hook_event_name":"PostToolUse"}' >/dev/null
+  is "limit: a call that succeeded was not stopped" "proj-l	npm test	120010	ok" "$(lm_last)"
+
+  # timeout(1) around the command is a limit too: it exits 124 when it fires.
+  is "limit: a shell timeout that fired" "That Bash call was stopped at its 1s limit." \
+    "$(lm_call 1021 'timeout 1 sleep 5' '' '{"error":"Exit code 124"}')"
+  is "limit: is recorded under the wrapped command" "proj-l	sleep	1021	limit" "$(lm_last)"
+  lm_call 1021 'make' '' '{"error":"Exit code 124"}' >/dev/null
+  is "limit: exit 124 without a timeout is a failure" "proj-l	make	1021	fail" "$(lm_last)"
+
+  fresh; lm_row 'npm test' 130000; lm_row 'npm test' 136000; lm_row 'npm test' 140000; lm_prompt
+  is "limit: the note quotes what it takes when it finishes" \
+    "That Bash call was stopped at its 2m00s limit (finishes in ~2m16s when it does)." "$(lm_call 120010 'npm test')"
+  fresh; lm_row 'npm test' 120010 limit; lm_row 'npm test' 50000; lm_prompt
+  is "limit: the note counts stopped runs" \
+    "That Bash call was stopped at its 2m00s limit (2 of its last 3 runs were)." "$(lm_call 120010 'npm test')"
+  fresh 'COMMAND_MEMORY=off'; lm_row 'npm test' 130000; lm_row 'npm test' 136000; lm_row 'npm test' 140000; lm_prompt
+  is "limit: COMMAND_MEMORY=off, the bare note" "That Bash call was stopped at its 2m00s limit." "$(lm_call 120010 'npm test')"
+  # No key, so nothing to look up: a chain is not remembered, but it was stopped.
+  fresh; lm_prompt
+  is "limit: a call without a key still gets the bare note" "That Bash call was stopped at its 2m00s limit." \
+    "$(lm_call 120010 'sleep 100; make')"
+
+  fresh 'SLOW_TOOL_AFTER=0'; lm_prompt
+  is "limit: no note when slow-tool notes are off" "" "$(lm_call 2024 'make' '{"timeout":2000}')"
+  is "limit: but it is still recorded" "proj-l	make	2024	limit" "$(lm_last)"
+  fresh 'INJECT_CONTEXT=false'; lm_prompt
+  is "limit: INJECT_CONTEXT=false tells the model nothing" "" "$(lm_call 2024 'make' '{"timeout":2000}')"
+  fresh 'SUBAGENTS=off'; lm_prompt
+  is "limit: SUBAGENTS=off sends a subagent no note" "" "$(lm_call 2024 'make' '{"timeout":2000}' '{"agent_id":"sub1"}')"
+
+  fresh 'TOOL_TIMING=on'; lm_prompt
+  lm_call 2024 'make' '{"timeout":2000}' >/dev/null
+  is "limit: the tool log still says fail" "Bash 2.024 fail" "$(tail -n 1 "$(ct_tool_log lm)")"
+
+  # Codex sends no duration_ms; the hook measures it afterwards, in shell. The
+  # limit is Claude Code's, so such a call is a failure and nothing more.
+  fresh; lm_prompt
+  printf '{"session_id":"lm","tool_use_id":"lm-codex","tool_name":"Bash"}' \
+    | CT_CODEX_HOOK=1 CT_CLIENT=codex bash "$SCRIPTS/pre-tool-use.sh"
+  printf '%s' "$(( $(date +%s) - 3 ))" > "$(ct_tool_start_file lm lm-codex)"
+  printf '{"session_id":"lm","tool_use_id":"lm-codex","tool_name":"Bash","hook_event_name":"PostToolUse","status":"failed","tool_input":{"command":"make","timeout":1000}}' \
+    | CT_CLIENT=codex bash "$SCRIPTS/post-tool-use.sh" >/dev/null
+  is "limit: a call without duration_ms is a failure" "fail" "$(lm_last | cut -f4)"
+else
+  for lm_label in "note" "recorded" "default" "early" "zero" "env" "text" "text recorded" "other tool" "background" "succeeded" \
+                  "shell timeout" "wrapped" "exit 124" "finishes in" "counts" "memory off" "no key" "notes off" \
+                  "still recorded" "inject off" "subagent" "tool log" "codex"; do
+    skip "limit: $lm_label" "jq is not installed"
+  done
+fi
+
+echo
+echo "raise limit: the decision"
+
+# $1 limit  $2 cap  $3 finished runs  $4 longest finished  $5 stopped  $6 the limit it was stopped at
+rl() { ct_raise_limit_var "$@"; printf '%s %s' "$_CT_RAISE" "$_CT_RAISE_WHY"; }
+is "raise: a limit short of the longest run goes to one and a half times it" "210000 taken" "$(rl 120000 600000 3 136000 0 0)"
+is "raise: a limit with room to spare is left" " " "$(rl 120000 600000 3 100000 0 0)"
+is "raise: within a tenth of the longest run is not room" "180000 taken" "$(rl 120000 600000 3 115000 0 0)"
+is "raise: a limit already long enough is left" " " "$(rl 300000 600000 3 136000 0 0)"
+is "raise: one finished run is evidence enough" "210000 taken" "$(rl 120000 600000 1 136000 0 0)"
+is "raise: only ever stopped, the limit doubles" "240000 stopped" "$(rl 120000 600000 0 0 2 120010)"
+is "raise: stopped once is enough" "240000 stopped" "$(rl 120000 600000 0 0 1 120010)"
+is "raise: a few runs that ended before the stop do not say how long it takes" "240000 stopped" "$(rl 120000 600000 1 50000 1 120010)"
+is "raise: a run that outlasted the stop does" "210000 taken" "$(rl 120000 600000 1 136000 1 120010)"
+is "raise: three finished runs outweigh one long stop" "210000 taken" "$(rl 120000 600000 3 136000 1 300020)"
+is "raise: a short limit that keeps stopping a quick command" "80000 taken" "$(rl 30000 600000 3 50000 2 30010)"
+is "raise: a limit above the one it was stopped at is left" " " "$(rl 200000 600000 0 0 2 120010)"
+is "raise: never past the cap" "600000 taken" "$(rl 120000 600000 3 500000 0 0)"
+is "raise: a limit at the cap is left" " " "$(rl 600000 600000 3 700000 0 0)"
+is "raise: a cap under the limit raises nothing" " " "$(rl 120000 100000 3 136000 0 0)"
+is "raise: nothing known, nothing raised" " " "$(rl 120000 600000 0 0 0 0)"
+is "raise: a limit that is not a number raises nothing" " " "$(rl abc 600000 3 136000 0 0)"
+is "raise: missing figures raise nothing" " " "$(rl 120000 600000 '' '' '' '')"
+is "raise: a leading zero is decimal" "210000 taken" "$(rl 0120000 600000 03 0136000 0 0)"
+
+echo
+echo "raise limit: the hook"
+
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$WORK/proj-r"
+  rl_prompt() { printf '{"session_id":"rl","cwd":"%s"}' "$WORK/proj-r" | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null; }
+  # $1 command, $2 extra tool_input fields, $3 extra top-level fields (JSON objects, optional)
+  rl_call() {
+    jq -cn --arg c "$1" --argjson ti "${2:-null}" --argjson top "${3:-null}" \
+      '{session_id: "rl", tool_name: "Bash", hook_event_name: "PreToolUse", tool_use_id: "rl-1",
+        tool_input: ({command: $c, description: "what it is for"} + ($ti // {}))} + ($top // {})' \
+      | bash "$SCRIPTS/pre-tool-use.sh"
+  }
+  rl_row() { printf '%s\tproj-r\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "${3:-ok}" >> "$CLAUDE_TIMESTAMP_COMMANDS"; }
+  rl_slow() { rl_row 'bash tests/run.sh' 130000; rl_row 'bash tests/run.sh' 133000; rl_row 'bash tests/run.sh' 136000; }
+
+  fresh; rl_slow; rl_prompt
+  out="$(rl_call 'cd x && bash tests/run.sh | tail -5')"
+  is "raise hook: the call's limit is raised" "210000" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.timeout')"
+  is "raise hook: the command is untouched" "cd x && bash tests/run.sh | tail -5" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command')"
+  is "raise hook: every other argument is kept" "what it is for" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.description')"
+  is "raise hook: and Claude is told" \
+    "Timestamps raised this call's limit from 2m00s to 3m30s: bash tests/run.sh has taken up to 2m16s here." \
+    "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')"
+  is "raise hook: answers as PreToolUse" "PreToolUse" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')"
+  # Raising a limit is not approving the call: that stays the person's.
+  is "raise hook: makes no permission decision" "false" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput | has("permissionDecision")')"
+  is "raise hook: and nothing else at the top" "hookSpecificOutput" "$(printf '%s' "$out" | jq -r 'keys | join(" ")')"
+  is "raise hook: a short limit Claude set itself is raised too" "from 1m00s to 3m30s" \
+    "$(rl_call 'bash tests/run.sh' '{"timeout":60000}' | jq -r '.hookSpecificOutput.additionalContext' | sed 's/.*limit \(from .* to [^:]*\):.*/\1/')"
+  is "raise hook: a limit that is long enough is left" "" "$(rl_call 'bash tests/run.sh' '{"timeout":300000}')"
+  is "raise hook: a background call is left" "" "$(rl_call 'bash tests/run.sh' '{"run_in_background":true}')"
+  is "raise hook: a command the memory does not know is left" "" "$(rl_call 'make')"
+  is "raise hook: a chain has no key, so is left" "" "$(rl_call 'sleep 5; bash tests/run.sh')"
+  is "raise hook: another tool is left" "" "$(rl_call 'bash tests/run.sh' '' '{"tool_name":"Read"}')"
+  is "raise hook: the cap is BASH_MAX_TIMEOUT_MS" "150000" \
+    "$(BASH_MAX_TIMEOUT_MS=150000 rl_call 'bash tests/run.sh' | jq -r '.hookSpecificOutput.updatedInput.timeout')"
+  is "raise hook: the limit is BASH_DEFAULT_TIMEOUT_MS when the call names none" "" \
+    "$(BASH_DEFAULT_TIMEOUT_MS=300000 rl_call 'bash tests/run.sh')"
+  # The change happened to the subagent's own call, so it is told whatever SUBAGENTS says.
+  fresh 'SUBAGENTS=off'; rl_slow; rl_prompt
+  is "raise hook: a subagent's call is raised too" "210000" \
+    "$(rl_call 'bash tests/run.sh' '' '{"agent_id":"sub1"}' | jq -r '.hookSpecificOutput.updatedInput.timeout')"
+  rl_call 'bash tests/run.sh' >/dev/null; rl_rc=$?
+  is "raise hook: exits 0 when it raises" "0" "$rl_rc"
+  rl_call 'make' >/dev/null; rl_rc=$?
+  is "raise hook: exits 0 when it does not" "0" "$rl_rc"
+
+  fresh; rl_row 'npx playwright test' 120010 limit; rl_prompt
+  is "raise hook: a command only ever stopped gets twice the limit" \
+    "Timestamps raised this call's limit from 2m00s to 4m00s: npx playwright test was stopped at 2m00s here and has not been seen to finish." \
+    "$(rl_call 'npx playwright test' | jq -r '.hookSpecificOutput.additionalContext')"
+
+  fresh 'RAISE_LIMIT=off'; rl_slow; rl_prompt
+  is "raise hook: RAISE_LIMIT=off raises nothing" "" "$(rl_call 'bash tests/run.sh')"
+  fresh 'COMMAND_MEMORY=off'; rl_slow; rl_prompt
+  is "raise hook: COMMAND_MEMORY=off raises nothing" "" "$(rl_call 'bash tests/run.sh')"
+  # A call is never changed where the plugin may not say so.
+  fresh 'INJECT_CONTEXT=false'; rl_slow; rl_prompt
+  is "raise hook: INJECT_CONTEXT=false raises nothing" "" "$(rl_call 'bash tests/run.sh')"
+  fresh 'ENABLED=off'; rl_slow; rl_prompt
+  is "raise hook: ENABLED=off raises nothing" "" "$(rl_call 'bash tests/run.sh')"
+  # A session that has not sent a prompt since the update has nothing staged.
+  fresh; rl_slow
+  ct_clear_state "rl"
+  is "raise hook: nothing staged, nothing raised" "" "$(rl_call 'bash tests/run.sh')"
+  # Codex's marked path only records a start time, as before.
+  fresh; rl_slow; rl_prompt
+  is "raise hook: Codex's path raises nothing" "" \
+    "$(jq -cn '{session_id: "rl", tool_name: "Bash", tool_use_id: "rl-c", tool_input: {command: "bash tests/run.sh"}}' | CT_CODEX_HOOK=1 CT_CLIENT=codex bash "$SCRIPTS/pre-tool-use.sh")"
+
+  is "raise hook: bound to Bash calls before they run" "Bash pre-tool-use.sh" \
+    "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].command | split("/") | last | rtrimstr("\""))"' "$ROOT/hooks/hooks.json")"
+  is "raise hook: Codex's hook map is as it was" "0" "$(git -C "$ROOT" diff --quiet HEAD -- hooks/codex-hooks.json 2>/dev/null; echo $?)"
+else
+  for rl_label in "raised" "command" "arguments" "told" "event" "no decision" "top" "own limit" "long enough" "background" \
+                  "unknown" "chain" "other tool" "cap" "default" "subagent" "exit raised" "exit left" "stopped" "off" \
+                  "memory off" "inject off" "enabled off" "unstaged" "codex" "bound" "codex map"; do
+    skip "raise hook: $rl_label" "jq is not installed"
+  done
+fi
+
+echo
+echo "raise limit: the setting"
+
+fresh
+ct_load_config
+is "raise setting: on by default" "on" "$CT_RAISE_LIMIT"
+bash "$SCRIPTS/setup.sh" --raise-limit=off >/dev/null 2>&1
+ct_load_config
+is "raise setting: --raise-limit=off writes it" "off" "$CT_RAISE_LIMIT"
+contains "raise setting: --show lists it" "Raise limit     off" "$(bash "$SCRIPTS/setup.sh" --show)"
+refutes "raise setting: a value that is not on or off is refused" bash "$SCRIPTS/setup.sh" --raise-limit=maybe
+fresh
+
+echo
+echo "checks: which commands count"
+
+for ev_key in 'bash tests/run.sh' 'npm test' 'pytest' 'shellcheck' 'npx vitest run' 'cargo build' \
+              'bash tools/check-docs.sh' 'claude plugin test' 'npx playwright test' 'go vet'; do
+  asserts "check: $ev_key is one" ct_is_check_key "$ev_key"
+done
+for ev_key in 'make' 'git checkout tests' 'cat tests/run.sh' 'ls' 'npm install' 'latest' 'python3 contest.py' \
+              'gh pr checks' 'grep test' ''; do
+  refutes "check: '$ev_key' is not one" ct_is_check_key "$ev_key"
+done
+
+if command -v jq >/dev/null 2>&1; then
+  ev_pub() { printf '%s' "$1" | jq -Rrs "$CT_JQ_CMDKEY"' . | ct_cmdparse | .publish'; }
+  is "publish: git commit" "commit" "$(ev_pub 'git commit -m x')"
+  is "publish: after other commands in a chain" "commit" "$(ev_pub 'git add -A && git commit -m "x; y"')"
+  is "publish: options before the subcommand are passed over" "commit" "$(ev_pub 'git -c user.name=t -c user.email=t@example.invalid commit -q -m x')"
+  is "publish: -C and its directory too" "push" "$(ev_pub 'git -C sub push origin main')"
+  is "publish: gh pr create" "pull request" "$(ev_pub 'gh pr create --fill')"
+  is "publish: gh pr merge" "pull request" "$(ev_pub 'gh pr merge 12 --squash')"
+  is "publish: the last one on the line" "push" "$(ev_pub 'git commit -m x && git push')"
+  # shellcheck disable=SC2016  # the $( is the command under test, not ours to expand
+  is "publish: a commit message with a heredoc" "commit" "$(ev_pub "$(printf 'git commit -m "$(cat <<EOF\nbody\nEOF\n)"')")"
+  is "publish: git log is none" "" "$(ev_pub 'git log --grep commit')"
+  is "publish: git commit-tree is none" "" "$(ev_pub 'git commit-tree abc')"
+  is "publish: gh pr view is none" "" "$(ev_pub 'gh pr view 12')"
+  is "publish: an echo of the words is none" "" "$(ev_pub 'echo git commit')"
+  is "publish: a non-string is none" "" "$(jq -rn "$CT_JQ_CMDKEY"' null | ct_cmdparse | .publish')"
+else
+  skip "publish" "jq is not installed"
+fi
+
+echo
+echo "checks: the note"
+
+if command -v jq >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+  ev_repo="$WORK/proj-e"
+  mkdir -p "$ev_repo/src"
+  git -C "$ev_repo" init -q 2>/dev/null
+  printf 'ignored.log\n' > "$ev_repo/.gitignore"
+  : > "$ev_repo/a.txt"; : > "$ev_repo/src/b.txt"
+  git -C "$ev_repo" add -A >/dev/null 2>&1
+  git -C "$ev_repo" -c user.name=t -c user.email=t@example.invalid commit -q -m first >/dev/null 2>&1
+  # Everything in the repository is an hour old, so only what a test touches
+  # afterwards is newer than a check.
+  ev_old() { touch -t "$(rs_ago 60)" "$ev_repo/.gitignore" "$ev_repo/a.txt" "$ev_repo/src/b.txt"; rm -f "$ev_repo/c.txt" "$ev_repo/ignored.log"; }
+  ev_prompt() { printf '{"session_id":"ev","cwd":"%s"}' "$ev_repo" | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null; }
+  # $1 ms, $2 command, $3 event, $4 extra top-level fields (a JSON object, optional)
+  ev_call() {
+    jq -cn --argjson ms "$1" --arg c "$2" --arg ev "${3:-PostToolUse}" --arg cwd "$ev_repo" --argjson top "${4:-null}" \
+      '{session_id: "ev", cwd: $cwd, tool_name: "Bash", hook_event_name: $ev, duration_ms: $ms, tool_input: {command: $c}} + ($top // {})' \
+      | bash "$SCRIPTS/post-tool-use.sh" | jq -r '.hookSpecificOutput.additionalContext // ""'
+  }
+  ev_mark() { printf '%s' "$(ct_state_file ev).chk-$1"; }
+  # Move a check N minutes into the past: its record and its file's own time.
+  ev_age() {
+    local f; f="$(ev_mark "$1")"
+    awk -F '\t' -v OFS='\t' -v t="$(( $(date +%s) - $2 * 60 ))" '{ $1 = t; print }' "$f" > "$f.new" && mv "$f.new" "$f"
+    touch -t "$(rs_ago "$2")" "$f"
+  }
+  # Durations move by a second between the call and the assertion.
+  ev_t() { sed -E 's/[0-9]+m[0-9]+s ago/T ago/g; s/[0-9]+s ago/T ago/g'; }
+  ev_commit='git add -A && git commit -m "a message; with && in it"'
+
+  fresh; ev_old; ev_prompt
+  ev_call 5000 'cd x && bash tests/run.sh | tail -3' >/dev/null
+  is "check note: a finished check is recorded" "ok	bash tests/run.sh" "$(cut -f2-3 "$(ev_mark bash_tests_run_sh)")"
+  is "check note: nothing changed since, nothing said" "" "$(ev_call 300 "$ev_commit")"
+  ev_age bash_tests_run_sh 10
+  : > "$ev_repo/a.txt"; : > "$ev_repo/c.txt"; : > "$ev_repo/ignored.log"
+  is "check note: files changed since a check that passed" \
+    "Before this commit: bash tests/run.sh passed T ago, 2 files changed since." "$(ev_call 300 "$ev_commit" | ev_t)"
+  is "check note: a push is named as one" \
+    "Before this push: bash tests/run.sh passed T ago, 2 files changed since." "$(ev_call 300 'git push origin main' | ev_t)"
+  is "check note: a pull request too" \
+    "Before this pull request: bash tests/run.sh passed T ago, 2 files changed since." "$(ev_call 300 'gh pr create --fill' | ev_t)"
+  is "check note: a commit and a push together are a push" \
+    "Before this push: bash tests/run.sh passed T ago, 2 files changed since." "$(ev_call 300 'git commit -m x && git push' | ev_t)"
+  is "check note: a commit that failed published nothing" "" "$(ev_call 300 "$ev_commit" PostToolUseFailure)"
+  is "check note: git status is not a publish" "" "$(ev_call 300 'git status')"
+  is "check note: a background commit is not waited for" "" \
+    "$(ev_call 300 "$ev_commit" PostToolUse '{"tool_input":{"command":"git commit -m x","run_in_background":true}}')"
+  is "check note: the report lists it" "1" \
+    "$(cd "$ev_repo" && CLAUDE_CODE_SESSION_ID=ev bash "$SCRIPTS/setup.sh" --session 2>&1 | ev_t | grep -c 'checks  *bash tests/run.sh passed T ago, 2 files changed since')"
+  is "check note: the report as JSON" "bash tests/run.sh ok 2" \
+    "$(cd "$ev_repo" && CLAUDE_CODE_SESSION_ID=ev bash "$SCRIPTS/setup.sh" --session --json | jq -r '.checks[] | "\(.key) \(.outcome) \(.changed)"')"
+
+  # A check that failed and was not run again is worth saying with nothing changed.
+  ev_call 4000 'npm test' PostToolUseFailure >/dev/null
+  is "check note: a failed check not run since, newest first" \
+    "Before this commit: npm test failed T ago, not run since; bash tests/run.sh passed T ago, 2 files changed since." \
+    "$(ev_call 300 "$ev_commit" | ev_t)"
+  # npm test now predates the edits above, so it too has files changed since.
+  ev_age npm_test 1
+  ev_call 2024 'npx playwright test' PostToolUseFailure '{"tool_input":{"command":"npx playwright test","timeout":2000}}' >/dev/null
+  is "check note: a check stopped at its limit" \
+    "Before this commit: npx playwright test was stopped at its limit T ago, not run since; npm test failed T ago, 2 files changed since; bash tests/run.sh passed T ago, 2 files changed since." \
+    "$(ev_call 300 "$ev_commit" | ev_t)"
+  ev_age npx_playwright_test 1; ev_age npm_test 2
+  ev_call 3000 'shellcheck' PostToolUseFailure >/dev/null
+  is "check note: three at most, the newest" "3" "$(ev_call 300 "$ev_commit" | tr ';' '\n' | grep -c .)"
+  lacks "check note: the oldest gives way" "bash tests/run.sh" "$(ev_call 300 "$ev_commit")"
+  # Run again and passing, with nothing touched after: all is as it was checked.
+  for ev_cmd in 'npm test' 'npx playwright test' 'shellcheck' 'bash tests/run.sh'; do ev_call 4000 "$ev_cmd" >/dev/null; done
+  is "check note: every check rerun and passing says nothing" "" "$(ev_call 300 "$ev_commit")"
+  contains "check note: the report still lists a fresh check" "nothing changed since" \
+    "$(cd "$ev_repo" && CLAUDE_CODE_SESSION_ID=ev bash "$SCRIPTS/setup.sh" --session 2>&1)"
+
+  fresh; ev_old; ev_prompt
+  ev_call 5000 'npm test' >/dev/null; ev_age npm_test 5; : > "$ev_repo/src/b.txt"
+  is "check note: one file is one file" "Before this commit: npm test passed T ago, 1 file changed since." "$(ev_call 300 "$ev_commit" | ev_t)"
+  ev_call 5000 'make' >/dev/null
+  refutes "check note: a command that is no check is not recorded" test -e "$(ev_mark make)"
+  ev_call 5000 'pytest' PostToolUse '{"tool_input":{"command":"pytest","run_in_background":true}}' >/dev/null
+  refutes "check note: a background check is not recorded" test -e "$(ev_mark pytest)"
+  is "check note: a subagent that commits is told" "Before this commit: npm test passed T ago, 1 file changed since." \
+    "$(ev_call 300 "$ev_commit" PostToolUse '{"agent_id":"sub1"}' | ev_t)"
+
+  # Outside a repository there is no telling what changed, so a pass is not
+  # mentioned; a failure still is.
+  mkdir -p "$WORK/proj-n"
+  ev_plain() {
+    jq -cn --argjson ms "$1" --arg c "$2" --arg ev "${3:-PostToolUse}" --arg cwd "$WORK/proj-n" \
+      '{session_id: "ev", cwd: $cwd, tool_name: "Bash", hook_event_name: $ev, duration_ms: $ms, tool_input: {command: $c}}' \
+      | GIT_CEILING_DIRECTORIES="$WORK" bash "$SCRIPTS/post-tool-use.sh" | jq -r '.hookSpecificOutput.additionalContext // ""'
+  }
+  is "check note: no repository, a pass is not mentioned" "" "$(ev_plain 300 "$ev_commit")"
+  ev_plain 4000 'pytest' PostToolUseFailure >/dev/null
+  is "check note: no repository, a failure still is" "Before this commit: pytest failed T ago, not run since." "$(ev_plain 300 "$ev_commit" | ev_t)"
+
+  for ev_conf in 'CHECK_NOTE=off' 'INJECT_CONTEXT=false' 'ENABLED=off'; do
+    fresh "$ev_conf"; ev_old; ev_prompt
+    ev_call 5000 'npm test' PostToolUseFailure >/dev/null
+    is "check note: $ev_conf says nothing" "" "$(ev_call 300 "$ev_commit")"
+  done
+  fresh 'CHECK_NOTE=off'; ev_prompt; ev_call 5000 'npm test' >/dev/null
+  refutes "check note: CHECK_NOTE=off records nothing" test -e "$(ev_mark npm_test)"
+  fresh 'SUBAGENTS=off'; ev_old; ev_prompt
+  ev_call 5000 'npm test' PostToolUseFailure >/dev/null
+  is "check note: SUBAGENTS=off sends a subagent no note" "" "$(ev_call 300 "$ev_commit" PostToolUse '{"agent_id":"sub1"}')"
+  contains "check note: the main conversation still gets it" "npm test failed" "$(ev_call 300 "$ev_commit")"
+  # On its own it keeps the tool hook awake, with every other tool feature off.
+  fresh 'HEARTBEAT_AFTER=0' 'SLOW_TOOL_AFTER=0' 'COMMAND_MEMORY=off'; ev_old; ev_prompt
+  asserts "check note: on its own it opens the gate" test -e "$(ct_state_file ev).timing-on"
+  ev_call 5000 'npm test' PostToolUseFailure >/dev/null
+  contains "check note: works with every other tool feature off" "npm test failed" "$(ev_call 300 "$ev_commit")"
+  # The records go when the session does.
+  ct_clear_state "ev"
+  refutes "check note: cleared with the session" test -e "$(ev_mark npm_test)"
+else
+  skip "check note" "jq or git is not installed"
+fi
+
+echo
+echo "checks: the setting"
+
+fresh
+ct_load_config
+is "check setting: on by default" "on" "$CT_CHECK_NOTE"
+bash "$SCRIPTS/setup.sh" --check-note=off >/dev/null 2>&1
+ct_load_config
+is "check setting: --check-note=off writes it" "off" "$CT_CHECK_NOTE"
+contains "check setting: --show lists it" "Check note      off" "$(bash "$SCRIPTS/setup.sh" --show)"
+refutes "check setting: a value that is not on or off is refused" bash "$SCRIPTS/setup.sh" --check-note=maybe
+fresh
+
+echo
+echo "timeline: the calls log"
+
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$WORK/proj-t"
+  tl_prompt() { printf '{"session_id":"tl","cwd":"%s"}' "$WORK/proj-t" | bash "$SCRIPTS/user-prompt-submit.sh" >/dev/null; }
+  # $1 ms, $2 command, $3 extra top-level fields (a JSON object, optional)
+  tl_call() {
+    jq -cn --argjson ms "$1" --arg c "$2" --argjson top "${3:-null}" \
+      '{session_id: "tl", tool_name: "Bash", hook_event_name: "PostToolUse", duration_ms: $ms, tool_input: {command: $c}} + ($top // {})' \
+      | bash "$SCRIPTS/post-tool-use.sh" >/dev/null
+  }
+  tl_log() { printf '%s' "$(ct_state_file tl).calls"; }
+  tl_last() { tail -n 1 "$(tl_log)" | cut -f2-6; }
+  tl_lines() { if [ -r "$(tl_log)" ]; then wc -l < "$(tl_log)" | tr -d ' '; else echo 0; fi; }
+
+  fresh; tl_prompt
+  tl_call 6000 'cd x && npm test | tail -3'
+  is "calls log: a call of five seconds or more is listed" "6000	Bash	npm test	ok	0" "$(tl_last)"
+  is_near "calls log: with the time it ended" "$(date +%s)" "$(tail -n 1 "$(tl_log)" | cut -f1)" 2
+  tl_call 4999 'npm test'
+  is "calls log: a shorter call is not" "1" "$(tl_lines)"
+  tl_call 7000 'sleep 1; make'
+  is "calls log: a call without a key is listed by its tool" "7000	Bash	-	ok	0" "$(tl_last)"
+  tl_call 8000 'npm test' '{"hook_event_name":"PostToolUseFailure"}'
+  is "calls log: a failure says so" "8000	Bash	npm test	fail	0" "$(tl_last)"
+  tl_call 2024 'npm test' '{"hook_event_name":"PostToolUseFailure","tool_input":{"command":"npm test","timeout":2000}}'
+  is "calls log: a call stopped at its limit is listed however short" "2024	Bash	npm test	limit	0" "$(tl_last)"
+  tl_call 9000 'x' '{"tool_name":"WebFetch"}'
+  is "calls log: other tools too" "9000	WebFetch	-	ok	0" "$(tl_last)"
+  tl_call 9000 'npm test' '{"agent_id":"sub1"}'
+  is "calls log: a subagent's call is marked" "9000	Bash	npm test	ok	1" "$(tl_last)"
+  tl_before="$(tl_lines)"
+  tl_call 9000 'npm test' '{"tool_input":{"command":"npm test","run_in_background":true}}'
+  is "calls log: a background call is not listed" "$tl_before" "$(tl_lines)"
+  ct_clear_state "tl"
+  refutes "calls log: cleared with the session" test -e "$(tl_log)"
+
+  fresh 'LIVE=off'; tl_prompt; tl_call 9000 'npm test'
+  is "calls log: LIVE=off lists nothing" "0" "$(tl_lines)"
+  fresh 'ENABLED=off'; tl_prompt; tl_call 9000 'npm test'
+  is "calls log: ENABLED=off lists nothing" "0" "$(tl_lines)"
+else
+  skip "calls log" "jq is not installed"
+fi
+
+echo
 echo "command memory: report"
 
 if command -v jq >/dev/null 2>&1; then
@@ -7332,6 +7814,17 @@ if command -v jq >/dev/null 2>&1; then
   is "report json: one command" "1" "$(printf '%s' "$js" | jq '.commands | length')"
   is "report json: median in ms" "240000" "$(printf '%s' "$js" | jq '.commands[0].median_ms')"
   is "report json: failures counted" "3" "$(bash "$SCRIPTS/setup.sh" --commands --project=other --json | jq '.commands[0].failed')"
+  for _ in 1 2; do printf '%s\tcr-proj\tbash tests/run.sh\t300020\tlimit\n' "$(date +%s)" >> "$CLAUDE_TIMESTAMP_COMMANDS"; done
+  for _ in 1 2; do printf '%s\tcr-proj\tnpx playwright test\t120010\tlimit\n' "$(date +%s)" >> "$CLAUDE_TIMESTAMP_COMMANDS"; done
+  out="$(cd "$WORK/cr-proj" && bash "$SCRIPTS/setup.sh" --commands 2>&1)"
+  is "report: the table has a stopped column" "1" "$(printf '%s\n' "$out" | grep -c 'failed *stopped$')"
+  is "report: stopped runs are counted on the row" "1" "$(printf '%s\n' "$out" | grep -c 'bash tests/run.sh  *3  *4m00s  *4m00s  *0  *2$')"
+  is "report: a command only ever stopped has no times" "1" "$(printf '%s\n' "$out" | grep -c 'npx playwright test  *0  *-  *-  *0  *2$')"
+  is "report: all projects has the column too" "1" "$(bash "$SCRIPTS/setup.sh" --commands --project=all 2>&1 | grep -c 'failed *stopped$')"
+  js="$(cd "$WORK/cr-proj" && bash "$SCRIPTS/setup.sh" --commands --json)"
+  is "report json: stopped and limit_ms" "2 300020" "$(printf '%s' "$js" | jq -r '.commands[] | select(.key == "bash tests/run.sh") | "\(.stopped) \(.limit_ms)"')"
+  is "report json: failed is still a number" "0" "$(printf '%s' "$js" | jq -r '.commands[] | select(.key == "bash tests/run.sh") | .failed')"
+  is "report json: all projects" "2" "$(bash "$SCRIPTS/setup.sh" --commands --project=all --json | jq -r '.commands[] | select(.key == "npx playwright test") | .stopped')"
   out="$(bash "$SCRIPTS/setup.sh" --commands --tool-timing=on 2>&1)"; rc=$?
   is "report: refuses a setting flag" "2" "$rc"
   out="$(bash "$SCRIPTS/setup.sh" --commands --since=7d 2>&1)"; rc=$?
@@ -7340,7 +7833,8 @@ if command -v jq >/dev/null 2>&1; then
   contains "report: says when memory is off" "COMMAND_MEMORY is off" "$(bash "$SCRIPTS/setup.sh" --commands 2>&1)"
 else
   for cr_label in "this project" "median" "not other" "project flag" "all" "all both" \
-                  "json one" "json median" "json failed" "refuses setting" "refuses since" "off"; do
+                  "json one" "json median" "json failed" "stopped column" "stopped row" "stopped only" "stopped all" \
+                  "json stopped" "json failed number" "json all" "refuses setting" "refuses since" "off"; do
     skip "report: $cr_label" "jq is not installed"
   done
 fi

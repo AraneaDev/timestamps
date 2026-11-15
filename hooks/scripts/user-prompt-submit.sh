@@ -89,6 +89,20 @@ if state_file="$(ct_state_file "$session_id")"; then
     cmdmem="on"
   fi
   ct_stage_flag "$session_id" "cmdmem"  "$cmdmem"
+  # Raising a call's limit needs the memory to go by, and is never done where
+  # the plugin may not say that it did: INJECT_CONTEXT=false stops it too.
+  raise="off"
+  if [ "$cmdmem" = "on" ] && [ "$CT_RAISE_LIMIT" = "on" ] && [ "$CT_INJECT_CONTEXT" != "false" ]; then
+    raise="on"
+  fi
+  ct_stage_flag "$session_id" "raise"   "$raise"
+  # Which checks ran, and the note about them after a commit. A note to the
+  # model like the others, so the same two switches silence it.
+  checknote="off"
+  if [ "$CT_ENABLED" = "on" ] && [ "$CT_CHECK_NOTE" = "on" ] && [ "$CT_INJECT_CONTEXT" != "false" ]; then
+    checknote="on"
+  fi
+  ct_stage_flag "$session_id" "checknote" "$checknote"
   ct_stage_flag "$session_id" "project" "$(ct_project_name "$cwd")"
 
   # A sentinel whose mere existence answers "does any session on this machine
@@ -100,7 +114,7 @@ if state_file="$(ct_state_file "$session_id")"; then
   # switched off.
   if [ "$CT_ENABLED" = "on" ] \
      && { [ "$CT_TOOL_TIMING" = "on" ] || [ "$notes_hb" -gt 0 ] || [ "$notes_st" -gt 0 ] \
-          || [ "$cmdmem" = "on" ]; }; then
+          || [ "$cmdmem" = "on" ] || [ "$checknote" = "on" ]; }; then
     ct_stage_flag "$session_id" "timing-on" "1"
   else
     ct_clear_flag "$session_id" "timing-on"

@@ -14,7 +14,8 @@ costs no model context. The exceptions are the short notes listed under
 | `MessageDisplay` | Draw the marker on the first batch of each message |
 | `Stop` / `StopFailure` | Close the turn and record what it cost |
 | `SessionEnd` | Report the summary, record the session, clear its state |
-| `PostToolUse` / `PostToolUseFailure` | Tell Claude when a turn runs long or a call was slow; with `TOOL_TIMING=on`, record what each call cost |
+| `PreToolUse`, Bash calls only | Raise the call's time limit when the command memory says it would be stopped, and tell Claude. Changes that one argument and nothing else; never approves a call |
+| `PostToolUse` / `PostToolUseFailure` | Tell Claude when a turn runs long or a call was slow, and after a commit which checks are out of date; with `TOOL_TIMING=on`, record what each call cost |
 
 The skill, `skills/time-awareness/SKILL.md`, is plain instructions that Claude
 loads when a note arrives or a time question comes up. It adds nothing to a
@@ -44,7 +45,9 @@ Claude Code builds that load hooks modules also run `hooks/mod/`, a TypeScript
 module named in `hooks.json` beside the scripts. It measures and records
 nothing. It reads what the scripts staged for the session (whether the plugin
 and `LIVE` are on, the session's start, the slow-tool threshold, the project)
-and the command memory, and draws from them while a turn is still running: a
+and the command memory, and draws from them: the `/timeline` pane, which
+lays the session's turn log and its list of slow calls out turn by turn, and,
+while a turn is still running, a
 clock among the dim labels in the footer, and, once a tool passes its usual
 time, that time in the line under the call (a Bash call in the terminal) or in
 a line above the prompt (any other tool, and the desktop). A call that waited

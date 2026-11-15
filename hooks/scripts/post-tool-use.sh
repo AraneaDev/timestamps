@@ -48,11 +48,32 @@ command -v jq >/dev/null 2>&1 || exit 0
 # message-display.sh apply. jq reads the payload from stdin itself: holding it
 # in a variable first cost a `cat` and a subshell on every tool call, for a
 # value nothing else here reads.
-IFS=$'\x1f' read -r session_id tool_name event ms tool_use_id agent_id outcome cmd_key background <<< "$(jq -r \
-  "$CT_JQ_CMDKEY"'[(.session_id // "-"), (.tool_name // ""), (.hook_event_name // ""), (.duration_ms // "" | tostring), (.tool_use_id // ""), (.agent_id // ""),
-    (if .hook_event_name == "PostToolUseFailure" or .error != null or .success == false or .status == "error" or .status == "failed" or (.tool_response | if type == "object" then .error != null else false end) then "fail" else "ok" end),
-    (if .tool_name == "Bash" then (.tool_input.command // "" | ct_cmdkey) else "" end),
-    (.tool_input.run_in_background // false | tostring)] | join("\u001f")')"
+#
+# stop_ms is the limit a Bash call was stopped at, empty for a call that was
+# not. Claude Code stops a foreground call at tool_input.timeout, or at
+# BASH_DEFAULT_TIMEOUT_MS, or after two minutes, and says so in the failure's
+# error text ("Command timed out after 2s", seen in a captured payload). A
+# call is stopped when it failed and either ran up to that limit or carries
+# that text; and when it ran under timeout(1) and exited 124, which is how
+# timeout reports that it fired. Where the limit is not one this hook can
+# name, the call's own duration is it. All of it needs duration_ms, which
+# Codex does not send: there a stopped call stays a failed one.
+IFS=$'\x1f' read -r session_id tool_name event ms tool_use_id agent_id outcome cmd_key background stop_ms publish cwd <<< "$(jq -r \
+  "$CT_JQ_CMDKEY"'
+  (.tool_input | if type == "object" then . else {} end) as $ti
+  | (if .tool_name == "Bash" then ($ti.command // "" | ct_cmdparse) else {key: "", timeout: false, publish: ""} end) as $c
+  | (if .hook_event_name == "PostToolUseFailure" or .error != null or .success == false or .status == "error" or .status == "failed" or (.tool_response | if type == "object" then .error != null else false end) then "fail" else "ok" end) as $o
+  | ($ti | ct_bash_limit) as $lim
+  | (.error | if type == "string" then . else "" end) as $e
+  | (if .tool_name == "Bash" and $o == "fail" and $ti.run_in_background != true and (.duration_ms | type) == "number" then
+       if .duration_ms + 250 >= $lim then $lim
+       elif ($e | contains("Command timed out after")) or ($c.timeout and ($e | startswith("Exit code 124"))) then .duration_ms
+       else null end
+     else null end) as $stop
+  | [(.session_id // "-"), (.tool_name // ""), (.hook_event_name // ""), (.duration_ms // "" | tostring), (.tool_use_id // ""), (.agent_id // ""),
+    $o, $c.key, ($ti.run_in_background // false | tostring),
+    (if $stop == null then "" else ($stop | floor | tostring) end),
+    $c.publish, (.cwd // "" | if type == "string" then . else "" end)] | join("\u001f")')"
 
 # The prompt hook resolved the settings against the payload's cwd and left
 # them here, so this hook honours the same project config the marker does
@@ -158,10 +179,37 @@ if [ -n "$agent_id" ]; then
 fi
 if [ -z "$agent_id" ] || [ "$subagent_notes" = "on" ]; then
   ct_read_flag_var "$session_id" "slowtool"; st_after="$_CT_FLAG"
-  ct_slow_tool_note_var "$tool_name" "$ms" "$outcome" "$st_after" || :
+  if [ -n "$stop_ms" ]; then
+    # Stopped at its limit. Told whatever the threshold is, short of off: a
+    # 30-second limit that was hit is as much a fact as a two-minute one.
+    # Worth one read of the memory, as a slow call is: what the command takes
+    # when it finishes, or how often it has been stopped before.
+    case "$st_after" in
+      ''|0|*[!0-9]*) _CT_NOTE="" ;;
+      *)
+        lim_usual=""; lim_stopped=""; lim_total=""
+        if [ -n "$cmd_key" ]; then
+          ct_read_flag_var "$session_id" "cmdmem"
+          if [ "$_CT_FLAG" = "on" ]; then
+            ct_read_flag_var "$session_id" "project"
+            ct_commands_path_var
+            while IFS=$'\t' read -r lim_key lim_runs lim_med _ _ lim_n _; do
+              [ "$lim_key" = "$cmd_key" ] || continue
+              [ "$lim_runs" -ge 3 ] && lim_usual="$(( lim_med / 1000 ))"
+              lim_stopped="$lim_n"; lim_total="$(( lim_runs + lim_n ))"
+              break
+            done < <(ct_command_stats "$_CT_COMMANDS_PATH" "$_CT_FLAG" 2>/dev/null) || :
+          fi
+        fi
+        ct_limit_note_var "$tool_name" "$stop_ms" "$lim_usual" "$lim_stopped" "$lim_total" || :
+        ;;
+    esac
+  else
+    ct_slow_tool_note_var "$tool_name" "$ms" "$outcome" "$st_after" || :
+  fi
   # Already slow, so worth one read of the memory: the usual figure for this
   # command, from the runs before this one (it is recorded further down).
-  if [ -n "$_CT_NOTE" ] && [ -n "$cmd_key" ]; then
+  if [ -z "$stop_ms" ] && [ -n "$_CT_NOTE" ] && [ -n "$cmd_key" ]; then
     ct_read_flag_var "$session_id" "cmdmem"
     if [ "$_CT_FLAG" = "on" ]; then
       ct_read_flag_var "$session_id" "project"
@@ -173,6 +221,51 @@ if [ -z "$agent_id" ] || [ "$subagent_notes" = "on" ]; then
     fi
   fi
   note="$_CT_NOTE"
+fi
+# The timeline pane's detail: one line for each call that took five seconds
+# or more, or was stopped at its limit however short. End time, duration,
+# tool, command key (- for none), outcome, and whether a subagent made it.
+# Only ever the key, as in the command memory, never the command line. The
+# live layer draws it (hooks/mod/timeline.ts), so LIVE=off writes nothing; it
+# does not keep this hook awake by itself, and a session with every
+# tool-facing setting off gets a timeline of turns without calls.
+#
+# An append of one short line, for the reason the tool log's is one.
+if [ -n "$ms" ] && [ "$background" != "true" ] && { [ "$ms" -ge 5000 ] || [ -n "$stop_ms" ]; }; then
+  ct_read_flag_var "$session_id" "live"
+  if [ "$_CT_FLAG" = "on" ] && ct_state_ready && ct_state_file_var "$session_id"; then
+    ct_epoch_var
+    tl_outcome="$outcome"
+    [ -z "$stop_ms" ] || tl_outcome="limit"
+    tl_agent=0
+    [ -z "$agent_id" ] || tl_agent=1
+    # shellcheck disable=SC2153  # _CT_NOW is assigned by ct_epoch_var (lib/state.sh)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_CT_NOW" "$ms" "$tool_name" "${cmd_key:--}" "$tl_outcome" "$tl_agent" \
+      >> "${_CT_STATE_FILE}.calls" 2>/dev/null || :
+  fi
+fi
+
+# Checks, and what became of them. A check that finishes is recorded; a
+# commit, a push or a pull request that went through is the moment to say
+# which checks did not pass or have had files change since. Both need the
+# call to have run here and finished: a background call has done neither.
+if [ "$tool_name" = "Bash" ] && [ -n "$ms" ] && [ "$background" != "true" ]; then
+  ct_read_flag_var "$session_id" "checknote"
+  if [ "$_CT_FLAG" = "on" ]; then
+    if [ -n "$cmd_key" ] && ct_is_check_key "$cmd_key"; then
+      ct_epoch_var
+      ck_outcome="$outcome"
+      [ -z "$stop_ms" ] || ck_outcome="limit"
+      # shellcheck disable=SC2153  # _CT_NOW is assigned by ct_epoch_var (lib/state.sh)
+      ct_check_record "$session_id" "$cmd_key" "$ck_outcome" "$_CT_NOW" || :
+    fi
+    if [ -n "$publish" ] && [ "$outcome" = "ok" ] \
+       && { [ -z "$agent_id" ] || [ "$subagent_notes" = "on" ]; }; then
+      ct_epoch_var
+      ct_check_note_var "$session_id" "$cwd" "$publish" "$_CT_NOW" || :
+      [ -n "$_CT_NOTE" ] && note="${note:+$note }$_CT_NOTE"
+    fi
+  fi
 fi
 if [ -z "$agent_id" ]; then
   ct_read_flag_var "$session_id" "heartbeat"; hb_every="$_CT_FLAG"
@@ -205,7 +298,11 @@ if [ "$tool_name" = "Bash" ] && [ -n "$cmd_key" ] && [ -n "$ms" ] && [ "$backgro
         ct_epoch_var
         ct_commands_path_var
         # shellcheck disable=SC2153  # _CT_NOW is assigned by ct_epoch_var (lib/state.sh)
-        printf '%s\t%s\t%s\t%s\t%s\n' "$_CT_NOW" "$cm_project" "$cmd_key" "$ms" "$outcome" \
+        # A stopped call is "limit" here and nowhere else: the tool logs
+        # above keep it a failure, which it also was.
+        cm_outcome="$outcome"
+        [ -z "$stop_ms" ] || cm_outcome="limit"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$_CT_NOW" "$cm_project" "$cmd_key" "$ms" "$cm_outcome" \
           >> "$_CT_COMMANDS_PATH" 2>/dev/null || :
         ;;
     esac

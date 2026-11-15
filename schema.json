@@ -246,6 +246,18 @@
       "values": ["on", "off"],
       "describes": "remember how long each Bash command takes in each project, and tell Claude at session start which ones are usually slow"
     },
+    "RAISE_LIMIT": {
+      "default": "on",
+      "validator": "ct_is_onoff",
+      "values": ["on", "off"],
+      "describes": "raise a Bash call's time limit before it runs, when the command memory says it would be stopped, and tell Claude; needs COMMAND_MEMORY, and INJECT_CONTEXT=false switches it off too"
+    },
+    "CHECK_NOTE": {
+      "default": "on",
+      "validator": "ct_is_onoff",
+      "values": ["on", "off"],
+      "describes": "tell Claude, after a commit, a push or a pull request, which checks it ran this session failed or have had files change since; INJECT_CONTEXT=false silences it"
+    },
     "LIVE": {
       "default": "on",
       "validator": "ct_is_onoff",

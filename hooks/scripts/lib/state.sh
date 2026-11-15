@@ -23,6 +23,10 @@
 # paths, home-relative paths, URLs and numbers are never kept, and the first
 # argument that is one of those ends the key.
 #
+# A call has one duration, so it gets a key only when one command in it can
+# have taken the time. Anything else has no key and is not remembered: a
+# wrong entry misleads, a missing one costs nothing.
+#
 # A string rather than a file so post-tool-use.sh can prepend it to the one jq
 # call it already makes. Written without regex builtins, which a jq built
 # without oniguruma lacks; 34 and 39 are the double and single quote, and
@@ -31,18 +35,40 @@
 # a $ (36) they open ${...} or $(...) instead, which is skipped like a quote:
 # it belongs to the word it sits in, so NODE_ENV=${ENV} stays one prefix.
 #
-#   first line only (heredocs) -> quoted text blanked -> last segment of
-#   && || ; -> first segment of | -> leading VAR=x, env, time, sudo, nice,
-#   command stripped -> basename of the program -> at most two arguments made
-#   of [A-Za-z0-9._/@:+-], not starting with - / ~, without :// :/ or ..,
-#   not all digits, no @ except a leading one (a scoped package, never
-#   user@host), and not a 16+ character run of letters and digits without a /
-#   (the shape of a token) -> 60 characters. echo and printf keep no
-#   arguments: what they print is data, often a token piped into a CLI. Only
-#   the first 40 words are looked at, so a huge command costs no more than a
-#   short one.
+#   first line only -> quoted text blanked -> split on && || ; -> first
+#   segment of | -> leading VAR=x, env, time, sudo, nice, command stripped,
+#   and the wrappers nohup, stdbuf (with its options) and timeout (with its
+#   options and duration) seen through -> each piece is one of
+#     ignored  nothing left, or cd pushd popd export set unset source . echo
+#              printf true : exit: setup before the command or a status
+#              report after it
+#     control  until while for do done if then else elif fi case esac: a loop
+#              or a branch, whose time belongs to no single command
+#     real     anything else, sleep included
+#   -> a key only for exactly one real piece and no control piece.
+#
+# The real piece is keyed by the basename of its program and at most two
+# arguments made of [A-Za-z0-9._/@:+-], not starting with - / ~, without ://
+# :/ or .., not all digits, no @ except a leading one (a scoped package,
+# never user@host), and not a 16+ character run of letters and digits without
+# a / (the shape of a token) -> 60 characters. It has no key when its program
+# is not plain, is xargs (its input decides the cost) or is a shell given -c
+# (the command is the quoted text, which is never read). Only the first 40
+# words of a piece are looked at, so a huge command costs no more than a
+# short one.
+#
+# Only the first line is read. Further non-blank lines are a heredoc body
+# when the first line opens one (<<); otherwise they are a script whose other
+# commands were never looked at, and the call has no key.
+#
+# ct_cmdparse gives {key, timeout, publish}: the key; whether a command on
+# the line ran under timeout(1), which post-tool-use.sh needs to tell a limit
+# that fired (exit 124) from a failure; and "commit", "push" or "pull
+# request" when the line hands work on to others (the last such piece wins),
+# which is when the checks behind that work are worth a look. A chain has no
+# key and can still publish. ct_cmdkey is the key alone.
 # shellcheck disable=SC2016,SC2034  # jq source, not shell; read by the hooks that source this file
-CT_JQ_CMDKEY='def ct_cmdkey:
+CT_JQ_CMDKEY='def ct_cmdparse:
   def unquote:
     [foreach explode[] as $c ({q: null, e: null, p: null};
       (if .q != null then (if $c == .q then .q = null else . end) | .e = null
@@ -64,25 +90,82 @@ CT_JQ_CMDKEY='def ct_cmdkey:
       or startswith("/") or startswith("~") or digits or (plain | not)
       or (contains("@") and (startswith("@") | not)) or contains(":/")
       or (length >= 16 and (contains("/") | not) and letters and numbers);
+  def base: (split("/") | last) // "";
   def prefix: contains("=") or . == "env" or . == "time" or . == "sudo" or . == "nice" or . == "command";
-  def strip: if length > 0 and (.[0] | prefix) then .[1:] | strip else . end;
+  def dashes: if length > 0 and (.[0] | startswith("-")) then .[1:] | dashes else . end;
+  # What follows timeout: its options, two of which take a value as a word of
+  # their own, then the duration.
+  def limit:
+    if length == 0 then .
+    elif .[0] == "-s" or .[0] == "--signal" or .[0] == "-k" or .[0] == "--kill-after" then .[2:] | limit
+    elif (.[0] | startswith("-")) then .[1:] | limit
+    else .[1:] end;
+  def strip:
+    if length == 0 then .
+    elif (.[0] | prefix) then .[1:] | strip
+    elif (.[0] | base) == "nohup" then .[1:] | strip
+    elif (.[0] | base) == "stdbuf" then .[1:] | dashes | strip
+    elif (.[0] | base) == "timeout" then .[1:] | limit | strip
+    else . end;
+  # Whether timeout is among the wrappers at the front of a piece.
+  def wrapped:
+    if length == 0 then false
+    elif (.[0] | prefix) then .[1:] | wrapped
+    elif (.[0] | base) == "nohup" then .[1:] | wrapped
+    elif (.[0] | base) == "stdbuf" then .[1:] | dashes | wrapped
+    else (.[0] | base) == "timeout" end;
+  def ignored: . as $w | ["cd", "pushd", "popd", "export", "set", "unset", "source", ".", "echo", "printf", "true", ":", "exit"] | index($w) != null;
+  def control: . as $w | ["until", "while", "for", "do", "done", "if", "then", "else", "elif", "fi", "case", "esac"] | index($w) != null;
   def take: if length == 0 or (.[0] | stops) then [] else [.[0]] + (.[1:] | take) end;
-  def segkey:
-    ((split("|") | .[0]) // "") | words | .[0:40] | strip
-    | if length == 0 then ""
-      else (.[0] | split("/") | last) as $prog
-        | if ($prog | plain | not) or ($prog | startswith("-")) then ""
-          elif $prog == "echo" or $prog == "printf" then $prog
-          else ([$prog] + (.[1:3] | take)) | join(" ") | .[0:60] end
+  # What a piece hands on to others, if anything: a commit, a push, or a
+  # pull request opened or merged.
+  # The git subcommand: the first word after git that is not one of its own
+  # options, two of which (-c, -C) take a value as a word of their own.
+  def gitsub:
+    if length == 0 then ""
+    elif .[0] == "-c" or .[0] == "-C" then .[2:] | gitsub
+    elif (.[0] | startswith("-")) then .[1:] | gitsub
+    else .[0] end;
+  def publish:
+    (.[0] // "" | base) as $prog
+    | if $prog == "git" then (.[1:] | gitsub) as $sub | (if $sub == "commit" or $sub == "push" then $sub else "" end)
+      elif $prog == "gh" and .[1] == "pr" and (.[2] == "create" or .[2] == "merge") then "pull request"
+      else "" end;
+  # One piece of the line: {k: "i"} ignored, {k: "c"} control, or
+  # {k: "r", key: ...} a real command, its key empty when it cannot be keyed.
+  # t says whether the piece ran under timeout, p what it published.
+  def piece:
+    ((split("|") | .[0]) // "") | words | .[0:40] | wrapped as $t | strip
+    | {t: $t, p: publish} + if length == 0 then {k: "i"}
+      else (.[0] | base) as $prog
+        | if ($prog | ignored) then {k: "i"}
+          elif ($prog | control) then {k: "c"}
+          elif ($prog | plain | not) or ($prog | startswith("-")) or $prog == "xargs"
+               or (($prog == "bash" or $prog == "sh" or $prog == "zsh") and .[1] == "-c") then {k: "r", key: ""}
+          else {k: "r", key: (([$prog] + (.[1:3] | take)) | join(" ") | .[0:60])} end
       end;
-  # A trailing status report (; echo "exit: $?") is not the command that took
-  # the time: the last segment that is something else names the call.
-  def trailer: . == "echo" or . == "printf" or . == "true" or . == ":" or . == "exit";
-  if type != "string" then "" else
-    ((split("\n") | .[0]) // "") | unquote | split("\t") | join(" ")
-    | [splitall(["&&", "||", ";"])[] | select(words | length > 0) | segkey]
-    | ((map(select(trailer | not)) | last) // last // "")
-  end;'
+  def blank: explode | all(.[]; . == 32 or . == 9 or . == 13);
+  if type != "string" then {key: "", timeout: false, publish: ""} else
+    split("\n") as $lines
+    | ($lines[0] // "") as $first
+    | if ($lines[1:] | any(.[]; blank | not)) and ($first | contains("<<") | not) then {key: "", timeout: false, publish: ""}
+      else
+        $first | unquote | split("\t") | join(" ")
+        | [splitall(["&&", "||", ";"])[] | select(words | length > 0) | piece]
+        | {key: (if any(.[]; .k == "c") then ""
+                 else map(select(.k == "r")) | if length == 1 then .[0].key else "" end end),
+           timeout: any(.[]; .t),
+           publish: ((map(.p | select(. != "")) | last) // "")}
+      end
+  end;
+def ct_cmdkey: ct_cmdparse | .key;
+# The time limit of a Bash call, in ms, from its tool_input: the timeout it
+# names, else BASH_DEFAULT_TIMEOUT_MS, else two minutes, which is how Claude
+# Code itself decides. A zero is no limit and is passed over.
+def ct_bash_limit:
+  (.timeout | numbers | select(. > 0))
+  // (env.BASH_DEFAULT_TIMEOUT_MS | select(type == "string" and (explode | length > 0 and all(.[]; . >= 48 and . <= 57))) | tonumber | select(. > 0))
+  // 120000;'
 
 # Where per-session state lives.
 #
@@ -656,6 +739,41 @@ ct_slow_tool_note() {
   printf '%s' "$_CT_NOTE"
 }
 
+# The sentence the tool hook adds when a Bash call was stopped at its time
+# limit, or nothing. A fact, like the slow-tool note it replaces for such a
+# call: what to do next time is the skill's business.
+#   $1 tool name   $2 the limit in ms   $3 usual seconds over finished runs,
+#   or empty   $4 earlier stopped runs of this command   $5 earlier runs of
+#   it altogether, finished and stopped
+#
+# With a usual figure the note says how long the command takes when it does
+# finish, which is what a new limit has to clear. Without one it says how
+# often this has happened, once it has happened before. $4 and $5 leave out
+# the call the note is about, so it is counted in here.
+#
+# Assigns _CT_NOTE, for the reason ct_slow_tool_note_var does.
+ct_limit_note_var() {
+  local tool="${1:-}" lim="${2:-}" usual="${3:-}" stopped="${4:-}" total="${5:-}" at tail=""
+  _CT_NOTE=""
+  case "$lim" in ''|*[!0-9]*) return 0 ;; esac
+  [ "${#lim}" -le 15 ] || return 0
+  at="$(ct_format_duration $(( 10#$lim / 1000 )))" || return 0
+  [ -n "$tool" ] || tool="tool"
+  case "$usual" in
+    ''|*[!0-9]*)
+      case "$stopped" in ''|*[!0-9]*) stopped=0 ;; esac
+      case "$total" in ''|*[!0-9]*) total=0 ;; esac
+      if [ $(( 10#$stopped + 1 )) -ge 2 ]; then
+        tail=" ($(( 10#$stopped + 1 )) of its last $(( 10#$total + 1 )) runs were)"
+      fi
+      ;;
+    # A median under a second floors to 0, which is no duration to quote.
+    0) tail=" (finishes in under 1s when it does)" ;;
+    *) tail=" (finishes in ~$(ct_format_duration "$((10#$usual))") when it does)" ;;
+  esac
+  printf -v _CT_NOTE 'That %s call was stopped at its %s limit%s.' "$tool" "$at" "$tail"
+}
+
 # The sentence telling the model how long the open turn has run, when a new
 # interval has been crossed since the last one it was told about, or nothing.
 #   $1 session id   $2 now (epoch)   $3 interval in seconds
@@ -887,6 +1005,9 @@ ct_prune_state() {
 # Keep the duration memory small: the last 20 runs of each command in each
 # project, nothing older than 90 days, and 5,000 lines at most, newest kept.
 # Anything that is not a whole five-field line is dropped on the way.
+#
+# A line is epoch, project, key, milliseconds and outcome: ok, fail, or limit
+# for a call stopped at its time limit.
 #   $1 the file   $2 now (epoch)
 #
 # Written to a temp file and moved into place, so a reader never sees half a
@@ -898,7 +1019,7 @@ ct_prune_commands() {
   case "$now" in ''|*[!0-9]*) return 0 ;; esac
   tmp="$file.$$"
   if awk -F '\t' -v cutoff="$(( now - 7776000 ))" '
-      NF == 5 && $1 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && ($5 == "ok" || $5 == "fail") && $1 + 0 >= cutoff {
+      NF == 5 && $1 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && ($5 == "ok" || $5 == "fail" || $5 == "limit") && $1 + 0 >= cutoff {
         line[++n] = $0; k[n] = $2 "\t" $3
       }
       END {
@@ -914,11 +1035,18 @@ ct_prune_commands() {
 }
 
 # Per command in one project, over its last 20 runs: key, runs, median ms,
-# last ms and failures, tab-separated, slowest median first.
+# last ms, failures, stopped runs, the limit they were stopped at and the
+# longest finished run, tab-separated, slowest median first.
 #   $1 the memory file   $2 project   $3 "all" to list every project instead,
 #   with the project as an extra first column
 # The median of an even count is the mean of the middle two, rounded down.
 # Rows that pruning would drop are skipped here too.
+#
+# A run stopped at its limit lasted as long as the limit, not as long as the
+# command. So runs, median, last and failures cover finished runs only (ok
+# and fail), stopped runs are counted on their own, and the limit is the
+# duration of the newest of them, 0 when there is none. A command only ever
+# stopped is still listed, with zeroes for the figures it has no runs for.
 ct_command_stats() {
   local file="${1:-}" project="${2:-}" mode="${3:-}" col=3
   [ -r "$file" ] || return 0
@@ -931,47 +1059,284 @@ ct_command_stats() {
     [ -n "$project" ] || return 0
   fi
   awk -F '\t' -v want="$project" -v mode="$mode" '
-    NF == 5 && $1 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && ($5 == "ok" || $5 == "fail") \
+    NF == 5 && $1 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && ($5 == "ok" || $5 == "fail" || $5 == "limit") \
       && (mode == "all" || $2 == want) {
       id = (mode == "all") ? $2 "\t" $3 : $3
-      c = ++n[id]; v[id, c] = $4; bad[id, c] = ($5 == "fail"); last[id] = $4
+      c = ++n[id]; v[id, c] = $4; o[id, c] = $5
     }
     END {
       for (id in n) {
         # The last 20 runs only, the window pruning keeps, so the figures do
         # not depend on whether a session end has pruned the file yet.
         first = (n[id] > 20) ? n[id] - 19 : 1
-        m = 0; fails = 0
-        for (i = first; i <= n[id]; i++) { a[++m] = v[id, i] + 0; fails += bad[id, i] }
+        m = 0; fails = 0; stopped = 0; lim = 0; last = 0; max = 0
+        for (i = first; i <= n[id]; i++) {
+          if (o[id, i] == "limit") { stopped++; lim = v[id, i] + 0 }
+          else { a[++m] = v[id, i] + 0; fails += (o[id, i] == "fail"); last = v[id, i] + 0; if (last > max) max = last }
+        }
         for (i = 2; i <= m; i++) { x = a[i]; j = i - 1; while (j >= 1 && a[j] > x) { a[j + 1] = a[j]; j-- } a[j + 1] = x }
-        med = (m % 2) ? a[(m + 1) / 2] : int((a[m / 2] + a[m / 2 + 1]) / 2)
-        printf "%s\t%d\t%d\t%d\t%d\n", id, m, med, last[id], fails
+        med = (m == 0) ? 0 : (m % 2) ? a[(m + 1) / 2] : int((a[m / 2] + a[m / 2 + 1]) / 2)
+        printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id, m, med, last, fails, stopped, lim, max
       }
     }' "$file" | sort -t "$(printf '\t')" -k"$col","$col"nr
   return 0
 }
 
+# Whether a command key names a check: something run to learn whether the
+# work is sound. By the words in the key, since nothing else is known about
+# it: a short list of what tests, linters, type checkers and builds are
+# called, and never a program that only reads or moves things, whose
+# arguments can carry the same words (cat tests/run.sh, git checkout tests).
+#
+# The list decides what is tracked, not what is claimed. What Claude is told
+# about a check is when it ran and how it ended, which is true of any command.
+ct_is_check_key() {
+  local key="${1:-}" word
+  [ -n "$key" ] || return 1
+  case "${key%% *}" in
+    git|gh|ls|cat|grep|rg|find|sed|awk|head|tail|rm|mv|cp|mkdir|touch|chmod|wc|diff|sort|jq|curl|cd|echo|printf|less|which|man|open|code|vim|nano)
+      return 1 ;;
+  esac
+  # Every character that is not a letter or a digit becomes a space, so the
+  # unquoted expansion below splits into words and can glob nothing.
+  # shellcheck disable=SC2086
+  for word in ${key//[^A-Za-z0-9]/ }; do
+    case "$word" in
+      test|tests|testing|spec|specs|check|checks|lint|typecheck|tsc|build|verify|vet|e2e|pytest|jest|vitest|mocha|rspec|phpunit|shellcheck|eslint|ruff|mypy|phpstan|clippy|tox|nox|ctest|playwright|cypress|flake8|pylint|rubocop|stylelint)
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Record that a check finished.
+#   $1 session id   $2 command key   $3 ok|fail|limit   $4 now (epoch)
+# One file per check, <state>.chk-<key>, holding the time, the outcome and
+# the key. Its modification time is the moment the check ended, which is
+# what ct_checks_rows compares the work tree against. Rewritten whole on
+# every run, so the latest run of a check is the one that counts.
+ct_check_record() {
+  local sid="${1:-}" key="${2:-}" outcome="${3:-}" now="${4:-}" name
+  [ -n "$key" ] || return 0
+  case "$outcome" in ok|fail|limit) ;; *) return 0 ;; esac
+  case "$now" in ''|*[!0-9]*) return 0 ;; esac
+  ct_state_ready && ct_state_file_var "$sid" || return 0
+  name="${key//[^A-Za-z0-9]/_}"
+  printf '%s\t%s\t%s\n' "$now" "$outcome" "$key" > "${_CT_STATE_FILE}.chk-${name:0:80}" 2>/dev/null || :
+  return 0
+}
+
+# The checks of a session, one per line: epoch, outcome, files changed since,
+# key, tab-separated, in no particular order.
+#   $1 the session's state file (ct_state_file)   $2 a directory in the work tree
+#
+# "Changed since" counts the files Git knows or would add, tracked and
+# untracked and not ignored, that are newer than the check's record. By
+# modification time, so an edit made by a tool, a shell command or the
+# person's own editor all count, and a commit made in between changes
+# nothing. It is a dash, for unknown (an empty field would vanish when the
+# line is read back on tabs), outside a repository, without git, or in
+# a work tree of more than 20,000 files, where the walk would cost more than
+# the answer is worth to a hook.
+ct_checks_rows() {
+  local base="${1:-}" cwd="${2:-}" f line top="" seen=0 i
+  local marks=() recs=() changed=()
+  [ -n "$base" ] || return 0
+  for f in "$base".chk-*; do
+    [ -f "$f" ] || continue
+    line=""
+    IFS= read -r line < "$f" || :
+    case "$line" in
+      [0-9]*$'\t'ok$'\t'?*|[0-9]*$'\t'fail$'\t'?*|[0-9]*$'\t'limit$'\t'?*) ;;
+      *) continue ;;
+    esac
+    case "${line%%$'\t'*}" in *[!0-9]*) continue ;; esac
+    marks[${#marks[@]}]="$f"; recs[${#recs[@]}]="$line"; changed[${#changed[@]}]=0
+    [ "${#marks[@]}" -lt 12 ] || break
+  done
+  [ "${#marks[@]}" -gt 0 ] || return 0
+  if [ -n "$cwd" ] && command -v git >/dev/null 2>&1; then
+    top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)" || top=""
+  fi
+  if [ -n "$top" ]; then
+    while IFS= read -r -d '' f; do
+      seen=$(( seen + 1 ))
+      if [ "$seen" -gt 20000 ]; then top=""; break; fi
+      for i in "${!marks[@]}"; do
+        if [ "$top/$f" -nt "${marks[$i]}" ]; then changed[i]=$(( changed[i] + 1 )); fi
+      done
+    done < <(git -C "$top" ls-files -co --exclude-standard -z 2>/dev/null)
+  fi
+  for i in "${!marks[@]}"; do
+    line="${recs[$i]}"
+    f="${line#*$'\t'}"
+    if [ -n "$top" ]; then
+      printf '%s\t%s\t%s\t%s\n' "${line%%$'\t'*}" "${f%%$'\t'*}" "${changed[$i]}" "${f#*$'\t'}"
+    else
+      printf '%s\t%s\t-\t%s\n' "${line%%$'\t'*}" "${f%%$'\t'*}" "${f#*$'\t'}"
+    fi
+  done
+  return 0
+}
+
+# What one row of ct_checks_rows says, into _CT_CHECK: "bash tests/run.sh
+# passed 48m12s ago, 9 files changed since". _CT_CHECK_STALE is 1 when it is
+# worth raising unasked: the check did not pass, or files changed after it.
+#   $1 epoch   $2 outcome   $3 files changed, or - for unknown   $4 key   $5 now
+ct_check_clause_var() {
+  local at="${1:-}" outcome="${2:-}" n="${3:-}" key="${4:-}" now="${5:-}" how age since
+  _CT_CHECK=""; _CT_CHECK_STALE=0
+  case "$at" in ''|*[!0-9]*) return 0 ;; esac
+  case "$now" in ''|*[!0-9]*) return 0 ;; esac
+  case "$outcome" in
+    ok) how="passed" ;;
+    fail) how="failed"; _CT_CHECK_STALE=1 ;;
+    limit) how="was stopped at its limit"; _CT_CHECK_STALE=1 ;;
+    *) return 0 ;;
+  esac
+  age=$(( now - at )); [ "$age" -ge 0 ] || age=0
+  case "$n" in
+    ''|*[!0-9]*) since="" ; [ "$outcome" = "ok" ] || since=", not run since" ;;
+    0) if [ "$outcome" = "ok" ]; then since=", nothing changed since"; else since=", not run since"; fi ;;
+    1) since=", 1 file changed since"; _CT_CHECK_STALE=1 ;;
+    *) since=", $n files changed since"; _CT_CHECK_STALE=1 ;;
+  esac
+  _CT_CHECK="$key $how $(ct_format_duration "$age") ago$since"
+}
+
+# The sentence the tool hook adds after a commit, a push or a pull request,
+# or nothing: the checks of this session that did not pass or have files
+# changed since, newest first, three at most. A fact; whether the changes
+# matter to the check is Claude's to judge.
+#   $1 session id   $2 the call's cwd   $3 commit|push|pull request   $4 now
+# Assigns _CT_NOTE.
+ct_check_note_var() {
+  local sid="${1:-}" cwd="${2:-}" what="${3:-}" now="${4:-}" at outcome n key list="" count=0
+  _CT_NOTE=""
+  [ -n "$what" ] || return 0
+  ct_state_file_var "$sid" || return 0
+  while IFS=$'\t' read -r at outcome n key; do
+    ct_check_clause_var "$at" "$outcome" "$n" "$key" "$now"
+    [ "$_CT_CHECK_STALE" = "1" ] && [ -n "$_CT_CHECK" ] || continue
+    list="${list:+$list; }$_CT_CHECK"
+    count=$(( count + 1 ))
+    [ "$count" -lt 3 ] || break
+  done < <(ct_checks_rows "$_CT_STATE_FILE" "$cwd" | sort -t "$(printf '\t')" -k1,1nr)
+  [ -z "$list" ] || _CT_NOTE="Before this $what: $list."
+  return 0
+}
+
+# Whether to raise the time limit of a Bash call about to run, and to what.
+#   $1 the call's limit, ms   $2 the highest limit allowed, ms
+#   $3 finished runs of this command   $4 the longest of them, ms
+#   $5 runs stopped at their limit   $6 the limit of the newest of those, ms
+# Assigns _CT_RAISE, the new limit in ms or empty for "leave it", and
+# _CT_RAISE_WHY: "taken" when the limit follows how long the command has
+# taken, "stopped" when all that is known is where it was stopped.
+#
+# The finished runs say how long the command takes when there are three of
+# them, or none was ever stopped, or one outlasted the stop. Then a limit
+# within a tenth of the longest run is too close, and the new one is one and
+# a half times that run. Otherwise the command has been stopped and nothing
+# shows how much longer it needed: a limit no higher than the one it was
+# stopped at is doubled. Rounded up to ten seconds, never past the cap, and
+# only ever upward.
+#
+# Whole seconds from here on, so the limit Claude is told is one it could
+# have typed.
+ct_raise_limit_var() {
+  local lim="${1:-}" cap="${2:-}" runs="${3:-0}" max="${4:-0}" stopped="${5:-0}" stop="${6:-0}" v to
+  _CT_RAISE=""
+  _CT_RAISE_WHY=""
+  for v in "$lim" "$cap"; do
+    case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  done
+  for v in "$lim" "$cap" "$runs" "$max" "$stopped" "$stop"; do
+    case "$v" in *[!0-9]*) return 0 ;; esac
+    [ "${#v}" -le 15 ] || return 0
+  done
+  # "10#": a leading zero would otherwise read as octal.
+  lim=$((10#$lim)); cap=$((10#$cap))
+  runs=$((10#${runs:-0})); max=$((10#${max:-0})); stopped=$((10#${stopped:-0})); stop=$((10#${stop:-0}))
+  # Dividing before multiplying is the point below: each figure is cut to
+  # whole seconds, then to whole tens of them, before it is scaled back up.
+  # shellcheck disable=SC2017
+  if [ "$runs" -gt 0 ] && { [ "$runs" -ge 3 ] || [ "$stopped" -eq 0 ] || [ "$max" -ge "$stop" ]; }; then
+    [ $(( lim * 10 )) -lt $(( max * 11 )) ] || return 0
+    to=$(( ( (max + 999) / 1000 * 3 + 1 ) / 2 ))
+    _CT_RAISE_WHY="taken"
+  elif [ "$stopped" -gt 0 ]; then
+    [ "$lim" -le $(( stop + 250 )) ] || return 0
+    to=$(( stop / 1000 * 2 ))
+    _CT_RAISE_WHY="stopped"
+  else
+    return 0
+  fi
+  # shellcheck disable=SC2017  # as above: rounded up to ten seconds first
+  to=$(( (to + 9) / 10 * 10000 ))
+  [ "$to" -le "$cap" ] || to="$cap"
+  if [ "$to" -gt "$lim" ]; then
+    _CT_RAISE="$to"
+  else
+    _CT_RAISE_WHY=""
+  fi
+  return 0
+}
+
 # The sentence telling the model which commands are usually slow in this
-# project, or nothing: keys with at least three runs and a median of at least
-# the slow-tool threshold, slowest first, at most three.
+# project, or nothing. At most three, in two kinds:
+#
+#   usually slow   three finished runs and a median of at least the slow-tool
+#                  threshold, slowest first
+#   stopped        stopped at its limit at least twice, whatever its usual
+#                  time: the limit was too short for it, and a third run as
+#                  it was will be stopped too
+#
+# The usually slow come first. A command with stopped runs says how many and
+# at what limit; one that has too few finished runs for a usual time says
+# only that.
 #   $1 the memory file   $2 project   $3 threshold in seconds
 ct_slow_commands_note() {
-  local file="${1:-}" project="${2:-}" after="${3:-}" key runs med list="" count=0
+  local file="${1:-}" project="${2:-}" after="${3:-}" key runs med stopped lim
+  local entry slow="" also="" nslow=0 nalso=0 list
+  # A variable, because bash 3.2 does not expand $'\n' inside "${x:+...}".
+  local nl=$'\n'
   case "$after" in ''|*[!0-9]*) return 0 ;; esac
   after=$((10#$after))
   [ "$after" -gt 0 ] || return 0
   if [ -z "$project" ] || [ "$project" = "-" ]; then
     return 0
   fi
-  while IFS=$'\t' read -r key runs med _; do
+  while IFS=$'\t' read -r key runs med _ _ stopped lim _; do
     case "$runs" in ''|*[!0-9]*) continue ;; esac
     case "$med" in ''|*[!0-9]*) continue ;; esac
-    [ "$runs" -ge 3 ] || continue
-    [ $(( med / 1000 )) -ge "$after" ] || continue
-    list="${list:+$list, }$key ~$(ct_format_duration $(( med / 1000 ))) ($runs runs)"
-    count=$(( count + 1 ))
-    [ "$count" -ge 3 ] && break
+    case "$stopped" in ''|*[!0-9]*) stopped=0 ;; esac
+    case "$lim" in ''|*[!0-9]*) lim=0 ;; esac
+    if [ "$runs" -ge 3 ]; then
+      entry="$key ~$(ct_format_duration $(( med / 1000 )))"
+      if [ "$stopped" -gt 0 ]; then
+        entry="$entry ($runs runs, $stopped more stopped at the $(ct_format_duration $(( lim / 1000 ))) limit)"
+      else
+        entry="$entry ($runs runs)"
+      fi
+    else
+      entry="$key stopped at its limit $stopped times (limit $(ct_format_duration $(( lim / 1000 ))))"
+    fi
+    if [ "$runs" -ge 3 ] && [ $(( med / 1000 )) -ge "$after" ]; then
+      [ "$nslow" -lt 3 ] || continue
+      slow="${slow:+$slow, }$entry"; nslow=$(( nslow + 1 ))
+    elif [ "$stopped" -ge 2 ]; then
+      [ "$nalso" -lt 3 ] || continue
+      also="${also:+$also$nl}$entry"; nalso=$(( nalso + 1 ))
+    fi
   done < <(ct_command_stats "$file" "$project")
+  list="$slow"
+  if [ -n "$also" ]; then
+    while IFS= read -r entry; do
+      [ "$nslow" -lt 3 ] || break
+      list="${list:+$list, }$entry"; nslow=$(( nslow + 1 ))
+    done <<< "$also"
+  fi
   if [ -n "$list" ]; then
     printf 'Usually slow in this project: %s.' "$list"
   fi

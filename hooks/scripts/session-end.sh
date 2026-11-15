@@ -32,6 +32,12 @@ ct_load_config "$cwd"
 # file, and keeping it bounded is still this plugin's job.
 ct_prune_commands "$(ct_commands_path)" "$(date +%s)"
 
+# The memory kept before a stopped run was told from a failed one, under keys
+# that named the wrong command. It cannot be corrected and is no longer read.
+# Only the old default path: one set through CLAUDE_TIMESTAMP_COMMANDS is the
+# user's, and is the file in use.
+rm -f "${HOME}/.claude/claude-timestamp-commands.tsv" 2>/dev/null || :
+
 # The master switch gates everything that draws on screen or talks to the
 # model, but not cleanup: a session switched off mid-way still accumulated
 # state files, and skipping the clear here would strand them until the 7-day

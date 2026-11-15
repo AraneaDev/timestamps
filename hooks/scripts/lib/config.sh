@@ -168,6 +168,8 @@ _ct_read_config_file() {
       SLOW_TOOL_AFTER) CT_SLOW_TOOL_AFTER="$value" ;;
       RESUME_NOTE)    CT_RESUME_NOTE="$value" ;;
       COMMAND_MEMORY) CT_COMMAND_MEMORY="$value" ;;
+      RAISE_LIMIT)    CT_RAISE_LIMIT="$value" ;;
+      CHECK_NOTE)     CT_CHECK_NOTE="$value" ;;
       LIVE)           CT_LIVE="$value" ;;
     esac
   done < "$file"
@@ -206,6 +208,8 @@ ct_load_config() {
   CT_SLOW_TOOL_AFTER="60"     # seconds; 0 disables. Tells the model, so INJECT_CONTEXT gates it too
   CT_RESUME_NOTE="on"         # tell the model how long ago this conversation or project was last active
   CT_COMMAND_MEMORY="on"      # remember how long each Bash command takes, per project
+  CT_RAISE_LIMIT="on"         # raise a Bash call's time limit when the memory says it will be stopped
+  CT_CHECK_NOTE="on"          # after a commit or push, tell the model which checks are out of date
   CT_LIVE="on"                # Claude Code only: live turn clock and slow-tool band
 
   CT_CONFIG_PROBLEMS=""
@@ -337,6 +341,8 @@ ct_validate_config() {
   _ct_require SLOW_TOOL_AFTER ct_is_seconds     60
   _ct_require RESUME_NOTE    ct_is_onoff        on
   _ct_require COMMAND_MEMORY ct_is_onoff        on
+  _ct_require RAISE_LIMIT    ct_is_onoff        on
+  _ct_require CHECK_NOTE     ct_is_onoff        on
   _ct_require LIVE           ct_is_onoff        on
 }
 
@@ -948,7 +954,7 @@ ct_history_path() {
 # The _var form assigns _CT_COMMANDS_PATH rather than printing, so the tool
 # hook pays no subshell for it on every recorded call.
 ct_commands_path_var() {
-  _CT_COMMANDS_PATH="${CLAUDE_TIMESTAMP_COMMANDS:-${HOME}/.claude/claude-timestamp-commands.tsv}"
+  _CT_COMMANDS_PATH="${CLAUDE_TIMESTAMP_COMMANDS:-${HOME}/.claude/claude-timestamp-commands-v2.tsv}"
 }
 
 ct_commands_path() {
