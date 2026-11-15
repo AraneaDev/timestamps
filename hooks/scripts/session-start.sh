@@ -246,10 +246,17 @@ if [ "$CT_INJECT_CONTEXT" != "false" ]; then
     else
       context="$(ct_resume_note "$origin" "$transcript" "$(date +%s)" "$cwd")"
     fi
+    # Kept for the pane. Nothing is staged this early, so the config decides.
+    if [ -n "$context" ] && [ "$CT_ENABLED" = "on" ] && [ "$CT_LIVE" = "on" ]; then
+      ct_told "$session_id" "resume" "$context" force
+    fi
   fi
   if [ "$CT_COMMAND_MEMORY" = "on" ]; then
     slow_cmds="$(ct_slow_commands_note "$(ct_commands_path)" "$(ct_project_name "$cwd")" "$CT_SLOW_TOOL_AFTER")"
     if [ -n "$slow_cmds" ]; then
+      if [ "$CT_ENABLED" = "on" ] && [ "$CT_LIVE" = "on" ]; then
+        ct_told "$session_id" "usual" "$slow_cmds" force
+      fi
       context="${context:+$context }$slow_cmds"
     fi
   fi

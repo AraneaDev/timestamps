@@ -67,6 +67,10 @@ Timestamps setup
   setup.sh --commands         How long each Bash command usually takes in this
                               project. --project=NAME for another, or
                               --project=all for every project.
+  setup.sh --pane             Everything the /timestamps pane draws, as JSON:
+                              this session, its slow calls and checks, what
+                              Claude was told, the command memory and past
+                              sessions. From inside Claude Code.
 
 Flags
   --json                      With --session, --turns or --commands: print
@@ -954,6 +958,70 @@ turns_report() {
       "$took" "$tools" "$slowest" "$how"
   done < <(_ct_turn_rows "$_CT_R_BASE" "$now" 0)
   return 0
+}
+
+# Everything the /timestamps pane draws, as one JSON document, so the hooks
+# module asks once and arranges the answer: it measures and records nothing
+# itself. The session's own figures are --session --json's, whole; beside
+# them the slow calls and the notes sent to the model as the hooks listed
+# them, this project's command memory, and the recorded sessions.
+#
+# A session with no record yet still gets the memory and the history, with
+# "session": null. Lines that are not whole are left out of every list: a
+# torn append must not become a call.
+pane_report() {
+  local now rc base sid project session="null" calls told commands history rows
+  local CT_TZ="${CT_TZ:-}"
+  command -v jq >/dev/null 2>&1 || { echo "--pane needs jq." >&2; return 2; }
+  CT_JSON=1
+  rc=0
+  _ct_report_session || rc=$?
+  case "$rc" in
+    0|1) ;;
+    *) return "$rc" ;;
+  esac
+  base="$_CT_R_BASE"; sid="$_CT_R_SID"
+  now="$(date +%s)"
+  if [ "$rc" = "0" ]; then
+    ct_session_totals "$sid"
+    session="$(_ct_session_json "$base" "$now" "$_CT_R_TIMING")" || session="null"
+  fi
+  calls="$( { cat "${base}.calls" 2>/dev/null || :; } | jq -R -s -c '
+    [split("\n")[] | split("\t") | select(length == 6)
+     | (.[0] | tonumber? // null) as $at | (.[1] | tonumber? // null) as $ms
+     | select($at != null and $ms != null and (.[4] == "ok" or .[4] == "fail" or .[4] == "limit"))
+     | {at: $at, ms: $ms, tool: .[2], key: (if .[3] == "-" or .[3] == "" then null else .[3] end),
+        outcome: .[4], subagent: (.[5] == "1")}]')" || calls="[]"
+  told="$( { cat "${base}.told" 2>/dev/null || :; } | jq -R -s -c '
+    [split("\n")[] | split("\t") | select(length >= 3)
+     | (.[0] | tonumber? // null) as $at | select($at != null and .[1] != "")
+     | {at: $at, kind: .[1], text: (.[2:] | join(" "))}]')" || told="[]"
+  project="$(ct_project_name "$PWD")"
+  rows=""
+  case "$project" in
+    ''|-) project="" ;;
+    *) rows="$(ct_command_stats "$(ct_commands_path)" "$project")" ;;
+  esac
+  commands="$(printf '%s\n' "$rows" | jq -R -s -c '
+    [split("\n")[] | select(length > 0) | split("\t") | select(length >= 8)
+     | {key: .[0], runs: (.[1] | tonumber), median_ms: (.[2] | tonumber), last_ms: (.[3] | tonumber),
+        failed: (.[4] | tonumber), stopped: (.[5] | tonumber), limit_ms: (.[6] | tonumber), max_ms: (.[7] | tonumber)}]')" || commands="[]"
+  # The file is capped at HISTORY_LIMIT lines; the tail keeps a hand-grown one cheap.
+  history="$( { tail -n 400 "$(ct_history_path)" 2>/dev/null || :; } | jq -R -s -c '
+    [split("\n")[] | split("\t") | select(length >= 6 and length <= 8)
+     | [.[1:6][] | tonumber? // null] as $n | select(($n | index(null)) == null)
+     | {when: .[0], secs: $n[0], turns: $n[1], waited: $n[2], idle: $n[3], failed: $n[4],
+        project: (if (.[6] // "-") == "-" or .[6] == "" then null else .[6] end)}]')" || history="[]"
+  jq -n --argjson now "$now" --arg project "$project" --argjson session "${session:-null}" \
+     --argjson calls "${calls:-[]}" --argjson told "${told:-[]}" --argjson commands "${commands:-[]}" \
+     --argjson history "${history:-[]}" --arg tz "$CT_TZ" --arg zone "$(ct_zone 2>/dev/null)" \
+     --arg slow "$CT_SLOW_TOOL_AFTER" --arg timing "$CT_TOOL_TIMING" --arg memory "$CT_COMMAND_MEMORY" \
+     --arg raise "$CT_RAISE_LIMIT" --arg check "$CT_CHECK_NOTE" '
+    {now: $now, project: (if $project == "" then null else $project end), session: $session,
+     calls: $calls, told: $told, commands: $commands, history: $history,
+     settings: {tz: (if $tz == "" then null else $tz end), zone: $zone,
+                slow_tool_after: ($slow | tonumber? // 0), tool_timing: $timing,
+                command_memory: $memory, raise_limit: $raise, check_note: $check}}'
 }
 
 # The median and last columns of one row of the commands report, into
@@ -1941,7 +2009,7 @@ main() {
   # --since=* and --project=* both also set unconditionally, and set the
   # same way whether or not a setting flag came with them.
   local saw_stats_bare=0 saw_since_flag=0 since_flag_value="" saw_session=0
-  local saw_project_filter=0 saw_turns=0 saw_commands=0
+  local saw_project_filter=0 saw_turns=0 saw_commands=0 saw_pane=0
 
   while [ $# -gt 0 ]; do
     arg="$1"
@@ -1951,6 +2019,7 @@ main() {
       --show)      action="show";   interactive=0 ;;
       --doctor)    action="doctor"; interactive=0 ;;
       --stats)     action="stats";  interactive=0; saw_stats_bare=1 ;;
+      --pane)      interactive=0; saw_pane=1 ;;
       --session)   action="session"; interactive=0; saw_session=1 ;;
       --turns)     action="turns"; interactive=0; saw_turns=1 ;;
       --commands)  action="commands"; interactive=0; saw_commands=1 ;;
@@ -2135,6 +2204,15 @@ main() {
     esac
   fi
 
+  # The pane's report stands alone: it already holds what the others say.
+  if [ "$saw_pane" = "1" ]; then
+    # "write" is the action when no report was named; anything else is one.
+    if [ "$action" != "write" ] || [ "$project_scope" = "1" ] || [ "${named_count:-0}" -gt 0 ]; then
+      echo "--pane is a report of its own; give it without another report or a setting." >&2
+      exit 2
+    fi
+    pane_report; exit $?
+  fi
   if [ "$action" = "show" ]; then show_config; exit 0; fi
   if [ "$action" = "doctor" ]; then doctor; exit $?; fi
   if [ "$action" = "stats" ]; then stats; exit $?; fi

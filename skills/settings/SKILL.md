@@ -1,5 +1,5 @@
 ---
-name: timestamps
+name: settings
 description: Configure Timestamps when the user asks to change timestamps, timezone, clock format, marker appearance, elapsed time, tool timing, summaries, history, or model-facing time notes.
 user-invocable: false
 ---
