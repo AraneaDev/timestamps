@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.43](https://github.com/AraneaDev/timestamps/compare/v0.0.42...v0.0.43) (2026-11-16)
+
+
+### Features
+
+* change settings and run the doctor from the /timestamps pane ([#122](https://github.com/AraneaDev/timestamps/issues/122)) ([4413561](https://github.com/AraneaDev/timestamps/commit/4413561dc315cdedf0924a7029ca68cae0d72279))
+
 ## [0.0.42](https://github.com/AraneaDev/timestamps/compare/v0.0.41...v0.0.42) (2026-11-15)
 
 
