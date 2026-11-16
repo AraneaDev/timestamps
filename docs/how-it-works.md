@@ -46,7 +46,8 @@ module named in `hooks.json` beside the scripts. It measures and records
 nothing. It reads what the scripts staged for the session (whether the plugin
 and `LIVE` are on, the session's start, the slow-tool threshold, the project)
 and the command memory, and draws from them: the `/timestamps` pane, which
-lays out what `setup.sh --pane` reports about the session on six tabs, and,
+lays out what `setup.sh --pane` reports about the session and the settings on
+eight tabs, and,
 while a turn is still running, a
 clock among the dim labels in the footer, and, once a tool passes its usual
 time, that time in the line under the call (a Bash call in the terminal) or in

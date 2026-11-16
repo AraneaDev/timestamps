@@ -3,7 +3,7 @@
 // of it; this only reads and arranges. A document that is not the expected
 // shape yields nothing rather than a half-drawn pane, and a list entry that
 // is not whole is left out, as bash leaves out a torn line.
-import type { PaneCall, PaneCheck, PaneCommand, PaneData, PaneNote, PaneOutcome, PaneSession, PaneTurn } from '../../types'
+import type { PaneCall, PaneCheck, PaneCommand, PaneData, PaneNote, PaneOutcome, PaneSession, PaneSetting, PaneTurn } from '../../types'
 
 type Json = Record<string, unknown>
 
@@ -97,6 +97,28 @@ export function parsePane(json: string): PaneData | undefined {
         : { when, secs, turns: num(o.turns) ?? 0, waited: num(o.waited) ?? 0, idle: num(o.idle) ?? 0, project: text(o.project) ?? null }
     }),
     tz: text(settings.tz) ?? null,
+    settings: each(doc.config, (o): PaneSetting | undefined => {
+      const key = text(o.key)
+      const flag = text(o.flag)
+      const kind = o.kind === 'toggle' || o.kind === 'choice' || o.kind === 'text' ? o.kind : undefined
+      return key === undefined || flag === undefined || kind === undefined
+        ? undefined
+        : {
+            key,
+            flag,
+            // An empty value is a value: a timezone left to the machine, a colour that follows another.
+            value: typeof o.value === 'string' ? o.value : '',
+            def: typeof o.default === 'string' ? o.default : '',
+            values: list(o.values).filter((v): v is string => typeof v === 'string'),
+            describes: typeof o.describes === 'string' ? o.describes : '',
+            kind,
+            empty: text(o.empty) ?? null,
+            isPinned: o.pinned === true,
+          }
+    }),
+    configFile: text(doc.config_file) ?? null,
+    projectConfig: text(doc.project_config) ?? null,
+    doctor: list(doc.doctor).filter((l): l is string => typeof l === 'string'),
   }
 }
 

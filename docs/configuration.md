@@ -213,6 +213,12 @@ Clock formats render as `14:03:22` for `24h`, `14:03` for `short`, `2:03 PM`
 for `12h`, and `2026-08-19T14:03:22` for `iso`. Any value containing a `%` is
 treated as a strftime string, so the escape hatch needs no separate setting.
 
+In Claude Code, the Settings tab of the `/timestamps` pane changes any of these
+with a key, without a turn of the model; see [the pane](reports.md#the-pane).
+From a shell, `setup.sh --only --KEY=VALUE` changes just the settings named and
+leaves the rest of your config as it is, where a plain `--KEY=VALUE` writes
+every setting out.
+
 Five settings cost something per tool call rather than once per message:
 `TOOL_TIMING`, `HEARTBEAT_AFTER`, `SLOW_TOOL_AFTER`, `COMMAND_MEMORY` and `CHECK_NOTE`. While any of them is
 on, a hook reads every tool call's payload to decide whether to record it or

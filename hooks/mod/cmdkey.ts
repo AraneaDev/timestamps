@@ -121,14 +121,32 @@ function piece(segment: string): Piece {
 
 const isBlank = (line: string) => /^[ \t\r]*$/.test(line)
 
+// The word that ends a heredoc opened on the line, or null when it opens
+// none: no <<, or <<<, a here-string, which has no body.
+function heredocEnd(first: string): string | null {
+  const at = first.indexOf('<<')
+  if (at < 0) return null
+  const rest = first.slice(at + 2)
+  if (rest.startsWith('<')) return null
+  const word = rest.replace(/^[- \t]+/, '').split(/[ \t;|&)><]/)[0] ?? ''
+  const end = word.replace(/["'\\]/g, '')
+  return end === '' ? null : end
+}
+
 // A call has one duration, so it has a key only when exactly one command in
 // it can have taken the time; anything else is not remembered.
 export function cmdKey(command: unknown): string {
   if (typeof command !== 'string') return ''
   const lines = command.split('\n')
   const first = lines[0] ?? ''
-  // Further lines are a heredoc body, or a script nobody looked at.
-  if (lines.slice(1).some(l => !isBlank(l)) && !first.includes('<<')) return ''
+  // Further lines are a heredoc body up to its end word; any past that, or
+  // any at all when no heredoc was opened, is a command nobody looked at.
+  const end = heredocEnd(first)
+  const rest = lines.slice(1)
+  const closed = end === null ? -1 : rest.findIndex(l => l.replace(/^\t+/, '') === end)
+  const after = end === null ? rest : closed < 0 ? [] : rest.slice(closed + 1)
+  // A line that only closes what the first line opened, the )" under a heredoc inside $( ), is no command.
+  if (after.some(l => !/^[ \t\r)"']*$/.test(l))) return ''
   const line = unquote(first).split('\t').join(' ')
   const pieces = ['&&', '||', ';']
     .reduce<string[]>((parts, sep) => parts.flatMap(p => p.split(sep)), [line])

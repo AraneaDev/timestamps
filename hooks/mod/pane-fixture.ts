@@ -51,6 +51,18 @@ export const REPORT = {
     { when: '2023-11-14T20:00:00', secs: 1800, turns: 10, waited: 600, idle: 0, failed: 0, project: 'site' },
   ],
   settings: { tz: 'UTC', zone: 'UTC', slow_tool_after: 60 },
+  config: [
+    { key: 'ENABLED', flag: 'enabled', value: 'on', default: 'on', values: ['on', 'off'], describes: 'master switch; off silences every hook', kind: 'toggle', empty: null, pinned: false },
+    { key: 'TZ', flag: 'tz', value: '', default: '', values: [], describes: 'IANA timezone name, or empty for the machine\'s local time', kind: 'text', empty: 'local', pinned: false },
+    { key: 'DISPLAY_FORMAT', flag: 'display', value: 'short', default: '24h', values: ['24h', 'short', '12h', 'iso'], describes: 'clock format of the marker', kind: 'choice', empty: null, pinned: false },
+    { key: 'TIME_COLOR', flag: 'time-color', value: 'cyan', default: '', values: ['', 'none', 'dim', 'cyan'], describes: 'colour of the time', kind: 'choice', empty: 'inherit', pinned: false },
+    { key: 'SLOW_AFTER', flag: 'slow-after', value: '7', default: '60', values: [], describes: 'seconds after which a turn is slow', kind: 'text', empty: null, pinned: true },
+    { key: 'TOOL_TIMING', flag: 'tool-timing', value: 'off', default: 'off', values: ['on', 'off'], describes: 'record what each tool call cost', kind: 'toggle', empty: null, pinned: false },
+    { key: 'BROKEN', flag: 'broken', value: 'x', kind: 'nonsense' },
+  ],
+  config_file: '~/.claude/claude-timestamp.conf',
+  project_config: '~/work/app/.claude/claude-timestamp.conf',
+  doctor: ['Timestamps doctor', '', 'Platform', '  uname           Linux', '', 'Dependencies', '  jq              jq-1.8.2', '', 'No problems found.'],
 }
 
 export const REPORT_JSON = JSON.stringify(REPORT)

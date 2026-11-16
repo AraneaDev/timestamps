@@ -13,7 +13,7 @@ At the end, where the session's time actually went.
 [![Release](https://img.shields.io/github/v/release/AraneaDev/timestamps)](https://github.com/AraneaDev/timestamps/releases)
 [![Tool page](https://img.shields.io/badge/tool%20page-aranea.dev-0b7285)](https://aranea.dev/tools/timestamps)
 [![CI](https://github.com/AraneaDev/timestamps/actions/workflows/ci.yml/badge.svg)](https://github.com/AraneaDev/timestamps/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-1765%20passing-2b8a3e)](tests/run.sh)
+[![Tests](https://img.shields.io/badge/tests-1803%20passing-2b8a3e)](tests/run.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-364fc7)](docs/troubleshooting.md#platform-notes)
 [![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -116,8 +116,9 @@ Timestamps raised this call's limit from 2m00s to 3m30s: bash tests/run.sh has t
 In Claude Code, `/timestamps` opens a pane beside the conversation: the
 session at a glance, then turn by turn. It shows which calls took the time,
 which ran well over their usual, which were stopped or failed, how your checks
-stand, and every note the agent was sent. Six tabs, a marker you move with
-`j` and `k`, and it follows the session while it runs. See
+stand, and every note the agent was sent. It also holds the settings, each
+changed with a key and no turn of the model, and the doctor. Eight tabs, a
+marker you move with `j` and `k`, and it follows the session while it runs. See
 [the pane](docs/reports.md#the-pane).
 
 <p align="center">
@@ -202,7 +203,8 @@ hooks from the repository and from managed settings rather than from your
 
 ## Configure
 
-Run `/timestamps:configure` in Claude Code to pick a timezone, a clock format, a colour
+Open `/timestamps settings` in Claude Code to change any setting with a key,
+or run `/timestamps:configure` to pick a timezone, a clock format, a colour
 or a preset; it takes effect on the next message. Every setting, the marker's
 layout, colours and per-project settings are in
 [Configuration](docs/configuration.md).

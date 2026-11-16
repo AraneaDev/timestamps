@@ -7609,6 +7609,8 @@ if command -v jq >/dev/null 2>&1; then
   is "publish: the last one on the line" "push" "$(ev_pub 'git commit -m x && git push')"
   # shellcheck disable=SC2016  # the $( is the command under test, not ours to expand
   is "publish: a commit message with a heredoc" "commit" "$(ev_pub "$(printf 'git commit -m "$(cat <<EOF\nbody\nEOF\n)"')")"
+  # shellcheck disable=SC2016  # the $( is the command under test, not ours to expand
+  is "publish: a commit still published when more commands follow it" "commit" "$(ev_pub "$(printf 'git commit -m "$(cat <<EOF\nbody\nEOF\n)"\ngit log -1')")"
   is "publish: git log is none" "" "$(ev_pub 'git log --grep commit')"
   is "publish: git commit-tree is none" "" "$(ev_pub 'git commit-tree abc')"
   is "publish: gh pr view is none" "" "$(ev_pub 'gh pr view 12')"
@@ -7873,6 +7875,32 @@ if command -v jq >/dev/null 2>&1; then
   # bash tests/run.sh is a check by its name, so the slow call above is one.
   is "pane report: the checks of the session" "bash tests/run.sh ok" "$(pn_q '.session.checks[] | "\(.key) \(.outcome)"')"
 
+  # Every setting, for the Settings tab: what it is now, what it defaults to,
+  # what it accepts and the flag that changes it.
+  is "pane report: every setting the schema has, in its order" "$(jq -r '.keys | keys_unsorted | join(" ")' "$ROOT/schema.json")" "$(pn_q '[.config[].key] | join(" ")')"
+  is "pane report: a toggle" "tool-timing off off toggle on,off false" \
+    "$(pn_q '.config[] | select(.key == "TOOL_TIMING") | "\(.flag) \(.value) \(.default) \(.kind) \(.values | join(",")) \(.pinned)"')"
+  is "pane report: a choice" "choice 24h,short,12h,iso" "$(pn_q '.config[] | select(.key == "DISPLAY_FORMAT") | "\(.kind) \(.values | join(","))"')"
+  is "pane report: a value to type, with the word that empties it" "text  local" "$(pn_q '.config[] | select(.key == "TZ") | "\(.kind) \(.value) \(.empty)"')"
+  is "pane report: a number is typed too" "text 60 null" "$(pn_q '.config[] | select(.key == "SLOW_AFTER") | "\(.kind) \(.value) \(.empty)"')"
+  contains "pane report: what a setting does" "master switch" "$(pn_q '.config[0].describes')"
+  is "pane report: where the settings are kept" "$(ct_tilde "$CLAUDE_TIMESTAMP_CONFIG")" "$(pn_q '.config_file')"
+  is "pane report: no project config here" "null" "$(pn_q '.project_config')"
+  contains "pane report: the doctor's findings, line by line" "Timestamps doctor" "$(pn_q '.doctor[0]')"
+  is "pane report: the doctor's lines carry no colour codes" "0" "$(pn_q '.doctor | join("\n")' | grep -c "$(printf '\033')")"
+  is "pane report: and its verdict" "No problems found." "$(pn_q '.doctor | map(select(length > 0)) | last')"
+  # A project config that pins a setting wins over the person's own, so the pane has to say so.
+  mkdir -p "$WORK/proj-p/.claude"
+  printf 'SLOW_AFTER=7\n' > "$WORK/proj-p/.claude/claude-timestamp.conf"
+  # A project config is only looked for when the person's own is where it
+  # normally is, so this run goes without the test suite's override, and with
+  # a home just above the project so the search stops there.
+  pn_json="$(cd "$WORK/proj-p" && env -u CLAUDE_TIMESTAMP_CONFIG HOME="$WORK" CLAUDE_CODE_SESSION_ID=pn bash "$SCRIPTS/setup.sh" --pane)"
+  is "pane report: a setting the project pins" "7 true" "$(pn_q '.config[] | select(.key == "SLOW_AFTER") | "\(.value) \(.pinned)"')"
+  is "pane report: one it does not" "false" "$(pn_q '.config[] | select(.key == "COLOR") | .pinned')"
+  contains "pane report: the project config is named" "proj-p/.claude/claude-timestamp.conf" "$(pn_q '.project_config')"
+  rm -rf "$WORK/proj-p/.claude"
+
   pn_json="$(cd "$WORK/proj-p" && CLAUDE_CODE_SESSION_ID=never-seen bash "$SCRIPTS/setup.sh" --pane 2>/dev/null)"; pn_rc=$?
   is "pane report: a session with no record still reports, without one" "0 null 2" "$pn_rc $(pn_q '.session') $(pn_q '.history | length')"
   is "pane report: and no calls" "0" "$(pn_q '.calls | length')"
@@ -7884,6 +7912,47 @@ if command -v jq >/dev/null 2>&1; then
 else
   skip "pane" "jq is not installed"
 fi
+
+echo
+echo "setup: one setting, one line"
+
+# --only changes the lines of the settings named and nothing else: the pane
+# writes through it, and a full rewrite would pin every default a person
+# never chose at the value it happens to have today.
+printf '# mine\nCOLOR=cyan\n\n# a note I wrote\nSLOW_AFTER=300\nFUTURE_KEY=kept\n' > "$CLAUDE_TIMESTAMP_CONFIG"
+bash "$SCRIPTS/setup.sh" --only --tool-timing=on >/dev/null 2>&1; on_rc=$?
+is "only: exits 0" "0" "$on_rc"
+is "only: the setting is added on a line of its own" "TOOL_TIMING=on" "$(tail -n 1 "$CLAUDE_TIMESTAMP_CONFIG")"
+is "only: every other line is as it was" "# mine|COLOR=cyan||# a note I wrote|SLOW_AFTER=300|FUTURE_KEY=kept|TOOL_TIMING=on" \
+  "$(tr '\n' '|' < "$CLAUDE_TIMESTAMP_CONFIG" | sed 's/|$//')"
+bash "$SCRIPTS/setup.sh" --only --color=red >/dev/null 2>&1
+is "only: a setting already there is changed where it stands" "# mine|COLOR=red||# a note I wrote|SLOW_AFTER=300|FUTURE_KEY=kept|TOOL_TIMING=on" \
+  "$(tr '\n' '|' < "$CLAUDE_TIMESTAMP_CONFIG" | sed 's/|$//')"
+bash "$SCRIPTS/setup.sh" --only --slow-after=45 --elapsed=off >/dev/null 2>&1
+is "only: several settings in one run" "SLOW_AFTER=45 ELAPSED=off" \
+  "$(grep -E '^(SLOW_AFTER|ELAPSED)=' "$CLAUDE_TIMESTAMP_CONFIG" | tr '\n' ' ' | sed 's/ $//')"
+on_before="$(cat "$CLAUDE_TIMESTAMP_CONFIG")"
+on_out="$(bash "$SCRIPTS/setup.sh" --only --slow-after=soon 2>&1)"; on_rc=$?
+is "only: a value the validator refuses writes nothing" "2 same" "$on_rc $([ "$(cat "$CLAUDE_TIMESTAMP_CONFIG")" = "$on_before" ] && echo same || echo changed)"
+contains "only: and says why" "--slow-after must be a whole number of seconds" "$on_out"
+bash "$SCRIPTS/setup.sh" --only --tz=local >/dev/null 2>&1
+is "only: the word for an empty value writes it empty" "TZ=" "$(grep '^TZ=' "$CLAUDE_TIMESTAMP_CONFIG")"
+bash "$SCRIPTS/setup.sh" --only --marker='%time ' >/dev/null 2>&1
+ct_load_config
+is "only: a value whose edges matter comes back whole" "[%time ]" "[$CT_MARKER_TEMPLATE]"
+printf 'COLOR=cyan\n  COLOR = blue\n' > "$CLAUDE_TIMESTAMP_CONFIG"
+bash "$SCRIPTS/setup.sh" --only --color=green >/dev/null 2>&1
+is "only: a setting written twice is left once" "COLOR=green" "$(tr '\n' '|' < "$CLAUDE_TIMESTAMP_CONFIG" | sed 's/|$//')"
+rm -f "$CLAUDE_TIMESTAMP_CONFIG"
+bash "$SCRIPTS/setup.sh" --only --live=off >/dev/null 2>&1
+is "only: no file yet, one is made with just that" "# claude-timestamp configuration|LIVE=off" "$(tr '\n' '|' < "$CLAUDE_TIMESTAMP_CONFIG" | sed 's/|$//')"
+bash "$SCRIPTS/setup.sh" --only >/dev/null 2>&1; on_rc=$?
+is "only: with no setting named is an error" "2" "$on_rc"
+bash "$SCRIPTS/setup.sh" --only --project --live=on >/dev/null 2>&1; on_rc=$?
+is "only: refuses --project, which already writes just what is named" "2" "$on_rc"
+bash "$SCRIPTS/setup.sh" --only --stats >/dev/null 2>&1; on_rc=$?
+is "only: refuses a report" "2" "$on_rc"
+fresh
 
 echo
 echo "command memory: report"

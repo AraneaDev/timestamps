@@ -17,7 +17,12 @@ const PANE = {
 }
 
 // The engine beneath the plugin: one report from bash, and panes that open and close.
-function world(on: On, report: () => { exitCode: number; stdout: string } = () => ({ exitCode: 0, stdout: REPORT_JSON })) {
+function world(
+  on: On,
+  report: () => { exitCode: number; stdout: string } = () => ({ exitCode: 0, stdout: REPORT_JSON }),
+  // What setup.sh --only answers a write with; a success unless the test says otherwise.
+  write: () => { exitCode: number; stdout: string; stderr: string } = () => ({ exitCode: 0, stdout: 'Wrote ~/.claude/claude-timestamp.conf', stderr: '' }),
+) {
   mock.clock(on, { now: 1_700_003_000_000 })
   mock.env(on, { TMPDIR: '/tmp', UID: '1000', HOME: '/home/u' })
   on('session.id', () => ({ value: 's1' }))
@@ -27,10 +32,12 @@ function world(on: On, report: () => { exitCode: number; stdout: string } = () =
   on('command.register', () => ({ value: { command: 'timestamps' } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   const seen = { runs: [] as { argv: readonly string[]; sid: string | undefined }[], open: [] as Record<string, unknown>[], isOpen: false }
+  const pane = (seen: { runs: { argv: readonly string[] }[] }) => seen.runs.filter(r => r.argv.includes('--pane'))
+  void pane
   on('process.run', ($, e) => {
     const call = e as { argv: readonly string[]; init?: { env?: Record<string, string> } }
     seen.runs.push({ argv: call.argv, sid: call.init?.env?.CLAUDE_CODE_SESSION_ID })
-    return { value: { ...report(), stderr: '' } }
+    return { value: call.argv.includes('--only') ? write() : { ...report(), stderr: '' } }
   })
   on('ui.open', ($, e) => {
     seen.open.push(e as Record<string, unknown>)
@@ -91,7 +98,7 @@ test('a tab is a press or a digit away, and /timestamps with a name opens on it'
   expect(await has(ui, 'slowest first')).toBe(true)
   await ui.unmount()
   const wrong = await $.command.run({ command: 'timestamps', args: 'nonsense' })
-  expect(wrong.text).toBe('No tab called "nonsense". The tabs are overview, turns, commands, checks, told, history.')
+  expect(wrong.text).toBe('No tab called "nonsense". The tabs are overview, turns, commands, checks, told, history, settings, doctor.')
 })
 
 test('j and k move the marker, never past either end, and o opens the marked turn', async ($, on) => {
@@ -150,4 +157,71 @@ test('an open pane is read again when a turn ends, a closed one is not', async (
   await $.command.run({ command: 'timestamps', args: '' })
   await $.turn.complete({ durationMs: 1000 } as never)
   expect(seen.runs.length).toBe(2)
+})
+
+// The settings write through setup.sh --only; the test stands in for it.
+function writes(seen: { runs: { argv: readonly string[] }[] }) {
+  return seen.runs.filter(r => r.argv.includes('--only')).map(r => r.argv.slice(2))
+}
+
+test('e toggles the marked setting through setup.sh --only, and says what it came to', async ($, on) => {
+  const seen = world(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'timestamps', args: 'settings' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'change' })
+  expect(writes(seen)).toEqual([['--only', '--enabled=off']])
+  expect(await has(ui, 'ENABLED is now off. It applies from the next message.')).toBe(true)
+  // The pane was read again after the write, so it shows what bash now says.
+  expect(seen.runs.filter(r => r.argv.includes('--pane')).length).toBe(2)
+  await ui.unmount()
+})
+
+test('e moves a choice to its next value, past the empty one by the word for it', async ($, on) => {
+  const seen = world(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'timestamps', args: 'settings' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  for (let i = 0; i < 2; i++) await ui.press({ key: 'down' })
+  await ui.press({ key: 'change' })
+  await ui.press({ key: 'down' })
+  await ui.press({ key: 'change' })
+  // DISPLAY_FORMAT short -> 12h; TIME_COLOR cyan is the last of its list -> the empty one, said as inherit.
+  expect(writes(seen)).toEqual([['--only', '--display=12h'], ['--only', '--time-color=inherit']])
+  await ui.unmount()
+})
+
+test('d writes the default, and a project pin is mentioned', async ($, on) => {
+  const seen = world(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'timestamps', args: 'settings' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  for (let i = 0; i < 4; i++) await ui.press({ key: 'down' })
+  await ui.press({ key: 'default' })
+  expect(writes(seen)).toEqual([['--only', '--slow-after=60']])
+  // The note is long enough to wrap, so only its start is asked for.
+  expect(await has(ui, 'SLOW_AFTER is now 60.')).toBe(true)
+  expect(await has(ui, 'A project config sets it too')).toBe(true)
+  await ui.unmount()
+})
+
+test('a value setup.sh refuses is not reported as changed: its own words are shown', async ($, on) => {
+  world(on, undefined, () => ({ exitCode: 2, stdout: '', stderr: "--enabled must be on or off, got 'x'.\n" }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'timestamps', args: 'settings' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'change' })
+  expect(await has(ui, "--enabled must be on or off, got 'x'.")).toBe(true)
+  expect(await has(ui, 'is now')).toBe(false)
+  await ui.unmount()
+})
+
+test('the doctor tab shows what the doctor found', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'timestamps', args: 'doctor' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await has(ui, 'No problems found.')).toBe(true)
+  expect(await has(ui, 'jq-1.8.2')).toBe(true)
+  await ui.unmount()
 })

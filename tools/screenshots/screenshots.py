@@ -1150,7 +1150,7 @@ def shot_skill():
 
 
 def shot_pane():
-    """The /timestamps pane in a real session: the overview, then the Turns tab.
+    """The /timestamps pane in a real session: the overview, the Turns tab, the Settings tab.
 
     Driven like the skill shot: a real session typed into through a pty, with
     this repository's plugin loaded by --plugin-dir. Two turns give the pane
@@ -1166,7 +1166,9 @@ def shot_pane():
     differs every run. /timestamps opens the pane; ctrl+x tab then gives it
     the keys, `2` opens the Turns tab and `j` marks the turn that made the call. The stream is recorded with its
     arrival times, so the first picture is the screen as it stood just before
-    that key and the second is the screen at the end.
+    that key, the second as it stood before `7` opened the Settings tab, and the
+    third is the screen at the end. Nothing is changed there: the marker is moved
+    and no setting is touched, and the config is this shot's own in any case.
 
     The session runs in the fullscreen layout, which is where a pane is
     docked beside the conversation; in the classic layout it is placed above
@@ -1197,6 +1199,7 @@ def shot_pane():
 
     cols, rows = 200, 44
     to_turns = 52.0
+    to_settings = to_turns + 7.0
     os.chdir(work)
     try:
         raw, timeline, _ = capture_pty(
@@ -1208,6 +1211,7 @@ def shot_pane():
                        "calls, then reply only 'done': sleep 7"), (17.5, "\r"),
                 (42.0, "/timestamps"), (44.0, "\r"),
                 (to_turns, "\x18"), (to_turns + 0.6, "\t"), (to_turns + 2.0, "2"), (to_turns + 3.5, "j"),
+                (to_settings, "7"), (to_settings + 1.5, "j"), (to_settings + 2.5, "j"),
             ],
             cols=cols, rows=rows, settle=6, total=90,
             env={"CLAUDE_TIMESTAMP_CONFIG": str(conf), "CLAUDE_TIMESTAMP_COMMANDS": str(memory),
@@ -1226,7 +1230,7 @@ def shot_pane():
         lines = screen.display
         # The pane's own rows: from its title to its bar of keys.
         top = next((y for y in range(rows) if "timestamps" in lines[y] and "r: reload" in lines[y]), None)
-        bot = next((y for y in range(rows - 1, -1, -1) if "1-6: tabs" in lines[y]), None)
+        bot = next((y for y in range(rows - 1, -1, -1) if "1-8: tabs" in lines[y]), None)
         if top is None or bot is None:
             raise SystemExit(f"the pane was not on screen for {out.name}; see {work.parent / 'pane.raw'}")
         # Its columns: right of the rule the surface draws between the
@@ -1236,7 +1240,8 @@ def shot_pane():
         save_image(compose_frame(screen, cols - left, top, bot, font, boldf, cw, ch, pad, left=left, grounds=True), out)
 
     picture([chunk for at, chunk in timeline if at < to_turns], ASSETS / "pane.webp")
-    picture([chunk for _, chunk in timeline], ASSETS / "pane-turns.webp")
+    picture([chunk for at, chunk in timeline if at < to_settings], ASSETS / "pane-turns.webp")
+    picture([chunk for _, chunk in timeline], ASSETS / "pane-settings.webp")
 
 
 SHOTS = {"hero": shot_hero, "picker": shot_picker, "wizard": shot_wizard,

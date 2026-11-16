@@ -8,7 +8,7 @@ import { cells } from './rows.ts'
 
 const data = parsePane(REPORT_JSON)!
 const clock = clockOf('UTC')
-const at = (tab: PaneTab, marker = 0, isByTime = false): PaneView => ({ tab, marker, isByTime })
+const at = (tab: PaneTab, marker = 0, isByTime = false, editing: string | null = null, note: string | null = null): PaneView => ({ tab, marker, isByTime, editing, note })
 const lines = (layout: Layout) => layout.rows.map(r => r.segments.filter(s => s.hidden !== true).map(s => s.text).join('').replace(/\s+$/, ''))
 const draw = (view: PaneView, columns = 100, height = 60) => lines(paneLayout(data, view, columns, height, clock))
 const rowOf = (drawn: string[], needle: string) => drawn.find(l => l.includes(needle)) ?? ''
@@ -20,7 +20,7 @@ test('the header: the name and project, the status, reload, then the tabs on a r
   expect(said(drawn[0] ?? '')).toBe(' timestamps app 50m00s · turn 3 running 3m20s live r: reload')
   expect(cells(drawn[0] ?? '')).toBe(99)
   expect(drawn[1]).toBe('')
-  expect(drawn[2]).toBe('  Overview    Turns    Commands    Checks    Told Claude    History')
+  expect(drawn[2]).toBe('  Overview    Turns    Commands    Checks    Told Claude    History    Settings    Doctor')
   expect(drawn[3]).toBe(` ${'─'.repeat(98)}`)
   expect(drawn[4]).toBe('')
 })
@@ -45,7 +45,7 @@ test('the keys are on the last row of the room, and every tab keeps its digit at
     expect(layout.rows.length).toBe(60)
     expect(layout.rows[59]?.key).toBe('keys')
     const keys = layout.rows.flatMap(r => r.segments.map(s => s.press?.hotkey)).filter(k => k !== undefined)
-    for (const k of ['1', '2', '3', '4', '5', '6', 'j', 'k', 'r']) expect([columns, k, keys.includes(k)]).toEqual([columns, k, true])
+    for (const k of ['1', '2', '3', '4', '5', '6', '7', '8', 'j', 'k', 'r']) expect([columns, k, keys.includes(k)]).toEqual([columns, k, true])
   }
 })
 
@@ -91,7 +91,7 @@ test('overview: the marker walks the rows that open a turn, and o says which', (
   expect([first.count, first.open]).toEqual([4, { turn: 2 }])
   expect(lines(first).filter(l => l.startsWith(' › ')).length).toBe(1)
   expect(paneLayout(data, at('overview', 2), 100, 60, clock).open).toEqual({ turn: 3 })
-  expect(said(rowOf(lines(first), 'j: ↓'))).toBe(' j: ↓ k: ↑ o: open turn 1-6: tabs')
+  expect(said(rowOf(lines(first), 'j: ↓'))).toBe(' j: ↓ k: ↑ o: open turn 1-8: tabs')
   // A marker past the end stands on the last row rather than on none.
   const past = paneLayout(data, at('overview', 99), 100, 60, clock)
   expect(lines(past).filter(l => l.startsWith(' › ')).length).toBe(1)
@@ -210,7 +210,7 @@ test('compact: a short room gets the title, the tabs, the body and the keys, wit
   const drawn = lines(layout)
   expect(drawn.length).toBe(11)
   expect(said(drawn[0] ?? '')).toBe(' timestamps app 50m00s · turn 3 running 3m20s live r: reload')
-  expect(drawn[1]).toBe('  Overview    Turns    Commands    Checks    Told Claude    History')
+  expect(drawn[1]).toBe('  Overview    Turns    Commands    Checks    Told Claude    History    Settings    Doctor')
   expect(drawn[2]).toBe('  50m00s session · 3 turns · 35m00s you waited · 10m00s away · 7 slow calls · 1 stopped · 1 failed')
   expect(layout.rows[10]?.key).toBe('keys')
   expect(drawn.slice(2, 10).some(l => l === '')).toBe(false)
@@ -277,4 +277,82 @@ test('a full-height pane that is still too short for its page scrolls the same w
 test('a page that fits has exactly the rows the marker can stand on', () => {
   expect(paneLayout(data, at('overview', 0), 100, 60, clock).count).toBe(4)
   expect(rowOf(draw(at('overview')), 'j: ↓').includes('more')).toBe(false)
+})
+
+test('settings: each setting with its value, what is changed and what a project pins', () => {
+  const drawn = draw(at('settings', 0), 90)
+  expect(said(rowOf(drawn, '── ◇ Settings'))).toBe(' ─ ◇ Settings ─ ~/.claude/claude-timestamp.conf ─')
+  const rows = drawn.filter(l => /^ [› ] [A-Z_]+ /.test(l)).map(said)
+  expect(rows).toEqual([
+    ' › ENABLED on',
+    ' TZ local',
+    ' DISPLAY_FORMAT short changed',
+    ' TIME_COLOR cyan changed',
+    ' SLOW_AFTER 7 ⚑ project',
+    ' TOOL_TIMING off',
+  ])
+})
+
+test('settings: the marked setting says what it does, what it accepts and how to change it by hand', () => {
+  const drawn = draw(at('settings', 3), 90)
+  expect(said(rowOf(drawn, '── ◆ TIME_COLOR'))).toBe(' ─ ◆ TIME_COLOR ─')
+  expect(drawn.includes('  Colour of the time.')).toBe(true)
+  expect(said(rowOf(drawn, 'accepts'))).toBe(' accepts inherit, none, dim, cyan')
+  expect(said(rowOf(drawn, 'default'))).toBe(' default inherit')
+  expect(said(rowOf(drawn, 'by hand'))).toBe(' by hand setup.sh --only --time-color=VALUE')
+  expect(said(rowOf(draw(at('settings', 1), 90), 'accepts'))).toBe(' accepts a value you type, or local')
+  expect(said(rowOf(draw(at('settings', 4), 90), 'accepts'))).toBe(' accepts a value you type')
+})
+
+test('settings: a setting the project pins says a change of your own does nothing here', () => {
+  const drawn = draw(at('settings', 4), 90).join(' ')
+  expect(drawn.includes('⚑ ~/work/app/.claude/claude-timestamp.conf sets this')).toBe(true)
+  expect(draw(at('settings', 0), 90).join(' ').includes('sets this')).toBe(false)
+})
+
+test('settings: typing a value puts a field where the value stands, on the marked row only', () => {
+  const layout = paneLayout(data, at('settings', 1, false, 'TZ'), 90, 60, clock)
+  const fields = layout.rows.flatMap(r => r.segments.filter(s => s.field !== undefined).map(s => [r.key, s.field?.value, s.field?.placeholder]))
+  expect(fields).toEqual([['setting-TZ', '', 'local']])
+  // The marker moved on: the setting named is no longer the marked one, so nothing is being typed.
+  expect(paneLayout(data, at('settings', 2, false, 'TZ'), 90, 60, clock).rows.some(r => r.segments.some(s => s.field !== undefined))).toBe(false)
+})
+
+test('settings: what the last change came to is said above the list, and the keys are named', () => {
+  const drawn = draw(at('settings', 0, false, null, 'TOOL_TIMING is now on. It applies from the next message.'), 90)
+  expect(drawn.includes('  TOOL_TIMING is now on. It applies from the next message.')).toBe(true)
+  expect(said(rowOf(drawn, 'j: ↓'))).toBe(' j: ↓ k: ↑ e: change t: type a value d: default 1-8: tabs')
+})
+
+test('settings: wide, the detail sits beside the list', () => {
+  const row = rowOf(draw(at('settings', 0), 160), '── ◇ Settings')
+  expect(row.includes('── ◆ ENABLED')).toBe(true)
+})
+
+test('doctor: the findings as the doctor lays them out, and its verdict on the rule', () => {
+  const drawn = draw(at('doctor'), 90)
+  expect(said(rowOf(drawn, '── ◉ Doctor'))).toBe(' ─ ◉ Doctor ─ no problems found ─')
+  const from = drawn.findIndex(l => l.includes('── ◉ Doctor'))
+  expect(drawn.slice(from + 1).filter(l => l !== '' && !l.includes('j: ↓'))).toEqual(['  Platform', '    uname           Linux', '  Dependencies', '    jq              jq-1.8.2', '  No problems found.'])
+  const troubled = parsePane(JSON.stringify({ ...REPORT, doctor: ['Timestamps doctor', '', 'Dependencies', '  jq              not found', '', '1 problem found.'] }))!
+  const bad = lines(paneLayout(troubled, at('doctor'), 90, 60, clock))
+  expect(said(rowOf(bad, '── ◉ Doctor'))).toBe(' ─ ◉ Doctor ─')
+  expect(bad.includes('  1 problem found.')).toBe(true)
+})
+
+test('settings and doctor fit a short room, and scroll like every other tab', () => {
+  for (const tab of ['settings', 'doctor'] as const) {
+    const layout = paneLayout(data, at(tab), 120, 11, clock)
+    expect([tab, layout.rows.length, layout.rows[10]?.key]).toEqual([tab, 11, 'keys'])
+  }
+  expect(paneLayout(data, at('doctor'), 120, 8, clock).count > 1).toBe(true)
+})
+
+test('the tab names close up, then shorten, before the row falls back to digits', () => {
+  const tabs = (columns: number) => lines(paneLayout(data, at('overview'), columns, 60, clock))[2] ?? ''
+  expect(tabs(100)).toBe('  Overview    Turns    Commands    Checks    Told Claude    History    Settings    Doctor')
+  expect(tabs(90)).toBe('  Overview   Turns   Commands   Checks   Told Claude   History   Settings   Doctor')
+  expect(tabs(80)).toBe('  Overview  Turns  Commands  Checks  Told Claude  History  Settings  Doctor')
+  expect(tabs(74)).toBe('  Overview  Turns  Commands  Checks  Told  History  Settings  Doctor')
+  expect(tabs(40)).toBe('  1   2   3   4   5   6   7   8')
 })
