@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.44](https://github.com/AraneaDev/timestamps/compare/v0.0.43...v0.0.44) (2026-11-16)
+
+
+### Fixes
+
+* hint the settings and doctor tabs, and lead the docs with the Settings tab ([#124](https://github.com/AraneaDev/timestamps/issues/124)) ([6e6135c](https://github.com/AraneaDev/timestamps/commit/6e6135cb6d0bb5069458920a9305c7b5ae066fb2))
+
 ## [0.0.43](https://github.com/AraneaDev/timestamps/compare/v0.0.42...v0.0.43) (2026-11-16)
 
 
