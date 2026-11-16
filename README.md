@@ -209,12 +209,16 @@ or a preset; it takes effect on the next message. Every setting, the marker's
 layout, colours and per-project settings are in
 [Configuration](docs/configuration.md).
 
+<p align="center">
+  <img src="assets/pane-settings.webp" alt="The Settings tab of the pane: every setting with its value, and the marked one's description, accepted values and default" width="760">
+</p>
+
 In Codex, use the bundled `settings` skill or `hooks/scripts/setup.sh` to change settings. The visual message marker remains specific to Claude Code.
 
 ## Documentation
 
 - [Install](docs/install.md): requirements, both clients, Windows and WSL.
-- [Configuration](docs/configuration.md): `/timestamps:configure`, the marker's layout, colours, every setting.
+- [Configuration](docs/configuration.md): the Settings tab, `/timestamps:configure`, the marker's layout, colours, every setting.
 - [What Claude is told](docs/agent-notes.md): every note the agent receives, and the skill.
 - [Reports and history](docs/reports.md): `--session`, `--turns`, `--commands`, `--stats`.
 - [Troubleshooting](docs/troubleshooting.md): when something is wrong, platform notes.

@@ -316,7 +316,7 @@ export function registerLive(on: On): void {
       .register({
         name: 'timestamps',
         description: 'Where this session\'s time went: a dashboard, turn by turn',
-        argumentHint: '[turns|commands|checks|told|history]',
+        argumentHint: '[turns|commands|checks|told|history|settings|doctor]',
       })
       .catch(err => $.ui.log(`/timestamps was not registered: ${String(err)}`))
     return next(e)
