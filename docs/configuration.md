@@ -5,7 +5,19 @@ Part of the Timestamps documentation. Start at the [README](../README.md).
 Nothing needs configuring. The defaults work, and the plugin tells you where to
 change them on first run.
 
-Run `/timestamps:configure` inside Claude Code. Bare, it shows what you have now and
+In Claude Code, `/timestamps settings` opens the pane on its Settings tab:
+every setting with its value, and for the marked one what it does, what it
+accepts and its default. `e` flips a switch or moves a choice to its next
+value, `t` opens a field to type a value, and `d` restores the default. No turn
+of the model is spent, only the line you changed is written, and it takes
+effect on the next message. See [the pane](reports.md#the-pane).
+
+<p align="center">
+  <img src="../assets/pane-settings.webp" alt="The Settings tab of the pane: every setting with its value, and the marked one's description, accepted values and default" width="760">
+</p>
+
+To describe a change in words instead, or where the pane is not available, run
+`/timestamps:configure`. Bare, it shows what you have now and
 offers a handful of presets, each previewed as the marker it actually produces:
 
 <p align="center">
@@ -213,8 +225,6 @@ Clock formats render as `14:03:22` for `24h`, `14:03` for `short`, `2:03 PM`
 for `12h`, and `2026-08-19T14:03:22` for `iso`. Any value containing a `%` is
 treated as a strftime string, so the escape hatch needs no separate setting.
 
-In Claude Code, the Settings tab of the `/timestamps` pane changes any of these
-with a key, without a turn of the model; see [the pane](reports.md#the-pane).
 From a shell, `setup.sh --only --KEY=VALUE` changes just the settings named and
 leaves the rest of your config as it is, where a plain `--KEY=VALUE` writes
 every setting out.
