@@ -10,12 +10,15 @@
  */
 export type Press = { id: string; label: string; hotkey?: string }
 
+/** A one-line text field: drawn as an Input holding `value`, in the cells its segment's text takes. */
+export type Field = { id: string; value: string; placeholder: string }
+
 /**
  * A run of text in one style. `color` and `bg` are Claude Code theme keys.
  * `hidden` marks a pressable drawn out of sight, there only so its hotkey
  * works (a tab's digit, where the tab itself shows only its name).
  */
-export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; bg?: string; press?: Press; hidden?: true }
+export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; bg?: string; press?: Press; hidden?: true; field?: Field }
 
 /** One line of the pane. */
 export type Row = { key: string; segments: Segment[] }

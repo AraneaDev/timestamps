@@ -56,5 +56,14 @@ export const CASES: ReadonlyArray<readonly [string, string]> = [
   ["find src | xargs grep foo", "find src"],
   ["cd x\nnpm test", ""],
   ["npm test\n\n", "npm test"],
-  ["timeout 5", ""]
+  ["timeout 5", ""],
+  ["python3 - <<'EOF'\nprint(1)\nEOF\nbash tests/run.sh", ""],
+  ["cat <<EOF > f\nbody\nEOF", "cat"],
+  ["cat <<EOF > f\nbody\nEOF\n\n", "cat"],
+  ["cat <<-EOF\n\tbody\n\tEOF\nmake", ""],
+  ["cat <<\"END\"\nbody\nEND\necho done; make", ""],
+  ["grep x <<< \"text\"\nmake", ""],
+  ["grep x <<< \"text\"", "grep x"],
+  ["git commit -m \"$(cat <<'EOF'\nfix: a thing\n\nbody\nEOF\n)\"", "git commit"],
+  ["git commit -m \"$(cat <<'EOF'\nfix: a thing\nEOF\n)\"\ngit push", ""]
 ]

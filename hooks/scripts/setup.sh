@@ -67,6 +67,10 @@ Timestamps setup
   setup.sh --commands         How long each Bash command usually takes in this
                               project. --project=NAME for another, or
                               --project=all for every project.
+  setup.sh --only --KEY=VALUE Change just the settings named, each on its own
+                              line of your config, and leave every other
+                              line as it is. Without --only a write spells
+                              out every setting.
   setup.sh --pane             Everything the /timestamps pane draws, as JSON:
                               this session, its slow calls and checks, what
                               Claude was told, the command memory and past
@@ -971,9 +975,52 @@ turns_report() {
 # torn append must not become a call.
 pane_report() {
   local now rc base sid project session="null" calls told commands history rows
+  local config doctor_lines config_file project_config schema
+  local t_flag t_key t_var t_validator t_sentinel t_empty pinned
   local CT_TZ="${CT_TZ:-}"
   command -v jq >/dev/null 2>&1 || { echo "--pane needs jq." >&2; return 2; }
   CT_JSON=1
+
+  # The settings, for the Settings tab, read before the session's own zone
+  # replaces the configured one below: one line per setting in the flag
+  # table's order, which is the schema's. The schema supplies what a setting
+  # accepts and what it does; the table supplies the flag that changes it and
+  # the word that empties it. A setting the project config names is pinned:
+  # that file is read second and wins, so changing the person's own would do
+  # nothing here, and the pane has to be able to say so.
+  ct_load_config "$PWD"
+  config_file="$(ct_tilde "$(ct_config_path)")"
+  project_config=""
+  [ -z "${CT_PROJECT_CONFIG:-}" ] || project_config="$(ct_tilde "$CT_PROJECT_CONFIG")"
+  schema="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/schema.json"
+  rows=""
+  # shellcheck disable=SC2034  # the validator and the empty-value rule are read to consume the line
+  while read -r t_flag t_key t_var t_validator t_sentinel t_empty; do
+    [ -n "$t_flag" ] || continue
+    pinned=0
+    if [ -n "${CT_PROJECT_CONFIG:-}" ] && grep -Eq "^[[:space:]]*${t_key}[[:space:]]*=" "$CT_PROJECT_CONFIG" 2>/dev/null; then
+      pinned=1
+    fi
+    rows="${rows}${t_key}"$'\x1f'"${t_flag}"$'\x1f'"${!t_var-}"$'\x1f'"${t_sentinel}"$'\x1f'"${pinned}"$'\n'
+  done <<< "$CT_FLAG_TABLE"
+  config="$(printf '%s' "$rows" | jq -R -s -c --slurpfile schema "$schema" '
+    ($schema[0].keys // {}) as $keys
+    | [split("\n")[] | select(length > 0) | split("\u001f") | select(length == 5)
+       | . as $row | ($keys[$row[0]] // {}) as $k
+       | (($k.values // []) | map(tostring)) as $values
+       | {key: $row[0], flag: $row[1], value: $row[2], default: (($k.default // "") | tostring),
+          values: $values, describes: ($k.describes // ""),
+          kind: (if $values == ["on", "off"] or $values == ["true", "false"] then "toggle"
+                 elif ($values | length) > 0 then "choice" else "text" end),
+          empty: (if $row[3] == "-" then null else $row[3] end), pinned: ($row[4] == "1")}]')" || config="[]"
+  # The doctor, as it prints, with its colour codes taken out afterwards: the
+  # Doctor tab shows the same findings. Not run under NO_COLOR, which the
+  # doctor would report as the person's own override.
+  # sed strips any colour code that got through; jq here uses no regex builtin,
+  # which a jq built without oniguruma lacks.
+  doctor_lines="$(doctor 2>&1 | sed "s/$(printf '\033')\[[0-9;]*m//g" | jq -R -s -c '
+    split("\n") | if (last // "") == "" then .[:-1] else . end')" || doctor_lines="[]"
+
   rc=0
   _ct_report_session || rc=$?
   case "$rc" in
@@ -1012,13 +1059,17 @@ pane_report() {
      | [.[1:6][] | tonumber? // null] as $n | select(($n | index(null)) == null)
      | {when: .[0], secs: $n[0], turns: $n[1], waited: $n[2], idle: $n[3], failed: $n[4],
         project: (if (.[6] // "-") == "-" or .[6] == "" then null else .[6] end)}]')" || history="[]"
-  jq -n --argjson now "$now" --arg project "$project" --argjson session "${session:-null}" \
+  jq -n --argjson config "${config:-[]}" --argjson doctor "${doctor_lines:-[]}" --arg config_file "$config_file" \
+     --arg project_config "$project_config" \
+     --argjson now "$now" --arg project "$project" --argjson session "${session:-null}" \
      --argjson calls "${calls:-[]}" --argjson told "${told:-[]}" --argjson commands "${commands:-[]}" \
      --argjson history "${history:-[]}" --arg tz "$CT_TZ" --arg zone "$(ct_zone 2>/dev/null)" \
      --arg slow "$CT_SLOW_TOOL_AFTER" --arg timing "$CT_TOOL_TIMING" --arg memory "$CT_COMMAND_MEMORY" \
      --arg raise "$CT_RAISE_LIMIT" --arg check "$CT_CHECK_NOTE" '
     {now: $now, project: (if $project == "" then null else $project end), session: $session,
      calls: $calls, told: $told, commands: $commands, history: $history,
+     config: $config, config_file: $config_file,
+     project_config: (if $project_config == "" then null else $project_config end), doctor: $doctor,
      settings: {tz: (if $tz == "" then null else $tz end), zone: $zone,
                 slow_tool_after: ($slow | tonumber? // 0), tool_timing: $timing,
                 command_memory: $memory, raise_limit: $raise, check_note: $check}}'
@@ -1443,6 +1494,51 @@ CHECK_NOTE=$CT_CHECK_NOTE
 # while it runs past its usual time. Display only.
 LIVE=$CT_LIVE
 CONF
+  echo "Wrote $(ct_tilde "$file")"
+}
+
+# Change the settings named in the user's config, each on its own line, and
+# leave every other line as it is: the comments, the order, a key a newer
+# version wrote, and above all the settings the file does not mention.
+#
+# write_config spells out every setting, which is right for the wizard, whose
+# answers are every setting. Done for one change it pins each default the
+# person never chose at the value it has today, and a later release that
+# moves a default then no longer reaches them. The pane changes one setting
+# at a time, so it writes through this.
+#
+# "$@" is KEY=value for each setting named, validated and sentinel-resolved by
+# main. A key already in the file is changed where it stands, and a second
+# line for the same key is dropped rather than left to disagree with the
+# first; a key not in the file is added at the end.
+write_named_only() {
+  local file existing="" pair key value line trimmed out seen
+  file="$(ct_config_path)"
+  mkdir -p "$(dirname "$file")"
+  [ -r "$file" ] && existing="$(cat "$file")"
+  [ -n "$existing" ] || existing="# claude-timestamp configuration"
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    out=""
+    seen=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      # The parser trims the key, so "  KEY = x" is this key too.
+      trimmed="${line#"${line%%[![:space:]]*}"}"
+      case "$trimmed" in
+        "$key="*|"$key "*=*|"$key	"*=*)
+          if [ "$seen" = "0" ]; then
+            out="${out}${key}=$(conf_value "$value")"$'\n'
+            seen=1
+          fi
+          ;;
+        *) out="${out}${line}"$'\n' ;;
+      esac
+    done <<< "$existing"
+    [ "$seen" = "1" ] || out="${out}${key}=$(conf_value "$value")"$'\n'
+    existing="${out%$'\n'}"
+  done
+  printf '%s\n' "$existing" | _ct_write_atomic "$file"
   echo "Wrote $(ct_tilde "$file")"
 }
 
@@ -2009,7 +2105,7 @@ main() {
   # --since=* and --project=* both also set unconditionally, and set the
   # same way whether or not a setting flag came with them.
   local saw_stats_bare=0 saw_since_flag=0 since_flag_value="" saw_session=0
-  local saw_project_filter=0 saw_turns=0 saw_commands=0 saw_pane=0
+  local saw_project_filter=0 saw_turns=0 saw_commands=0 saw_pane=0 only=0
 
   while [ $# -gt 0 ]; do
     arg="$1"
@@ -2020,6 +2116,7 @@ main() {
       --doctor)    action="doctor"; interactive=0 ;;
       --stats)     action="stats";  interactive=0; saw_stats_bare=1 ;;
       --pane)      interactive=0; saw_pane=1 ;;
+      --only)      interactive=0; only=1 ;;
       --session)   action="session"; interactive=0; saw_session=1 ;;
       --turns)     action="turns"; interactive=0; saw_turns=1 ;;
       --commands)  action="commands"; interactive=0; saw_commands=1 ;;
@@ -2204,6 +2301,14 @@ main() {
     esac
   fi
 
+  # --only is a way of writing, so it goes with settings and nothing else.
+  # Checked before the reports are dispatched: one of them would otherwise
+  # run and exit with --only silently dropped.
+  if [ "$only" = "1" ] && { [ "$action" != "write" ] || [ "$project_scope" = "1" ] || [ "$saw_pane" = "1" ]; }; then
+    echo "--only changes settings in your own config; give it with --KEY=VALUE and nothing else." >&2
+    echo "--project already writes only what is named." >&2
+    exit 2
+  fi
   # The pane's report stands alone: it already holds what the others say.
   if [ "$saw_pane" = "1" ]; then
     # "write" is the action when no report was named; anything else is one.
@@ -2220,6 +2325,13 @@ main() {
   if [ "$action" = "turns" ]; then turns_report; exit $?; fi
   if [ "$action" = "commands" ]; then commands_report; exit $?; fi
   if [ "$interactive" = "1" ]; then wizard; exit 0; fi
+
+  if [ "$only" = "1" ]; then
+    if [ "$named_count" -eq 0 ]; then
+      echo "--only needs at least one setting to change, such as --only --tool-timing=on." >&2
+      exit 2
+    fi
+  fi
 
   # Non-interactive: start from what is already configured so each flag is a
   # targeted change rather than a full overwrite.
@@ -2246,6 +2358,8 @@ main() {
     # The ${pairs[@]+...} guard is what makes a run that named nothing safe on
     # bash 3.2, where an empty array under `set -u` aborts the plain form.
     write_project_config "${pairs[@]+"${pairs[@]}"}" || exit $?
+  elif [ "$only" = "1" ]; then
+    write_named_only "${pairs[@]}" || exit $?
   else
     write_config
   fi

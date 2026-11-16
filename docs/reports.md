@@ -56,7 +56,8 @@ bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/setup.sh" --session --json
 ## The pane
 
 In Claude Code, `/timestamps` opens a pane beside the conversation, and closes
-it again. It shows where the session's time went, on six tabs:
+it again. It shows where the session's time went, and lets you change the
+plugin's settings, on eight tabs:
 
 | Tab | What it shows |
 | --- | --- |
@@ -66,6 +67,8 @@ it again. It shows where the session's time went, on six tabs:
 | Checks | Each check run this session, how it ended and how many files have changed since |
 | Told Claude | Every note the plugin sent Claude this session, newest first: slow and stopped calls, raised limits, stale checks, turn length, and what it said at session start |
 | History | Finished sessions by day (time, how long you waited, turns) and by project when `PROJECTS` is on |
+| Settings | Every setting with its value, which ones you changed, and which a project config pins; the marked one says what it does and what it accepts. Change it here, without a turn of the model |
+| Doctor | What `setup.sh --doctor` finds: the platform, the dependencies, the configuration in force and whether anything is wrong |
 
 <p align="center">
   <img src="../assets/pane.webp" alt="The Overview tab of the pane" width="760">
@@ -73,6 +76,10 @@ it again. It shows where the session's time went, on six tabs:
 
 <p align="center">
   <img src="../assets/pane-turns.webp" alt="The Turns tab of the pane, with the marked turn's call beneath the list" width="760">
+</p>
+
+<p align="center">
+  <img src="../assets/pane-settings.webp" alt="The Settings tab of the pane: every setting with its value, and the marked one's description, accepted values and default" width="760">
 </p>
 
 <sub>A real session, recorded as it happened. The command memory was told
@@ -90,11 +97,14 @@ Give the pane the keys with ctrl+x tab. Then:
 
 | Key | What it does |
 | --- | --- |
-| `1` to `6` | Open a tab |
+| `1` to `8` | Open a tab |
 | `j`, `k` | Move the marker down and up |
 | `o` | On the overview, open the marked turn on the Turns tab |
 | `s` | On Turns and Commands, change the order of the list |
 | `r` | Read the session again |
+| `e` | On Settings, change the marked setting: a switch flips, a choice moves to its next value, anything else opens a field to type in |
+| `t` | On Settings, type a value for the marked setting, also where it has a list |
+| `d` | On Settings, put the marked setting back to its default |
 
 `/timestamps turns`, or any tab's name or the start of it, opens the pane on
 that tab. The pane is read again when a turn ends, and every few seconds while
@@ -110,6 +120,14 @@ row. A page longer than the room is shown through a window that `j` and `k`
 move: first through the rows the marker can stand on, then on to the end of
 the page, and the keys row says how many rows are out of sight above and
 below.
+
+A change on the Settings tab is written by `setup.sh --only`, which checks the
+value the way the hooks read it and changes that setting's line in your config
+and no other: the settings you never touched stay unwritten, so they go on
+following the defaults. The tab says what the change came to, or why it was
+refused, and it applies from the next message. A setting that a project config
+pins is marked `⚑ project`: that file wins in its project, so a change to your
+own does nothing there, and the tab says so rather than pretending.
 
 It draws what the hooks recorded and records nothing itself: one run of
 `setup.sh --pane`, which prints everything above as JSON and can be run by

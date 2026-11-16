@@ -68,3 +68,13 @@ test('a check is fresh, stale or bad', () => {
   expect(data.checks.map(checkState)).toEqual(['stale', 'bad', 'fresh'])
   expect(checkState({ key: 'k', outcome: 'ok', at: 0, changed: null })).toBe('fresh')
 })
+
+test('the settings are read with their kind, an empty value kept as a value, a broken one left out', () => {
+  expect(data.settings.map(c => c.key)).toEqual(['ENABLED', 'TZ', 'DISPLAY_FORMAT', 'TIME_COLOR', 'SLOW_AFTER', 'TOOL_TIMING'])
+  expect(data.settings[1]).toEqual({
+    key: 'TZ', flag: 'tz', value: '', def: '', values: [], describes: "IANA timezone name, or empty for the machine's local time", kind: 'text', empty: 'local', isPinned: false,
+  })
+  expect([data.settings[4]?.isPinned, data.settings[3]?.values]).toEqual([true, ['', 'none', 'dim', 'cyan']])
+  expect([data.configFile, data.projectConfig]).toEqual(['~/.claude/claude-timestamp.conf', '~/work/app/.claude/claude-timestamp.conf'])
+  expect(data.doctor.length).toBe(9)
+})

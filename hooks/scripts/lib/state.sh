@@ -57,9 +57,12 @@
 # words of a piece are looked at, so a huge command costs no more than a
 # short one.
 #
-# Only the first line is read. Further non-blank lines are a heredoc body
-# when the first line opens one (<<); otherwise they are a script whose other
-# commands were never looked at, and the call has no key.
+# Only the first line is read. Further lines are a heredoc body when the
+# first line opens one (<<), up to the word that ends it; any non-blank line
+# past that, or any at all when no heredoc was opened, is a command nobody
+# looked at, and the call has no key (a line of nothing but closing quotes
+# and parentheses, the )" under a heredoc inside $( ), is no command). A heredoc whose end word never comes is
+# body to its last line. <<< is a here-string and opens nothing.
 #
 # ct_cmdparse gives {key, timeout, publish}: the key; whether a command on
 # the line ran under timeout(1), which post-tool-use.sh needs to tell a limit
@@ -145,18 +148,52 @@ CT_JQ_CMDKEY='def ct_cmdparse:
           else {k: "r", key: (([$prog] + (.[1:3] | take)) | join(" ") | .[0:60])} end
       end;
   def blank: explode | all(.[]; . == 32 or . == 9 or . == 13);
+  # Blank, or nothing but closing quotes and parentheses.
+  def closer: explode | all(.[]; . == 32 or . == 9 or . == 13 or . == 41 or . == 34 or . == 39);
+  # A line without its leading tabs, which <<- allows before the body and the end word.
+  def detab: . as $s | ($s | explode) as $c
+    | ([range(0; $c | length) | select($c[.] != 9)] | first) as $i
+    | if $i == null then "" else $s[$i:] end;
+  # The word that ends a heredoc opened on this line, or null when it opens
+  # none: no <<, or <<<, which is a here-string and has no body. The word runs
+  # from past the <<, an optional - and blanks, to the next blank or operator,
+  # with its quotes taken off.
+  def heredoc_end:
+    index("<<") as $i
+    | if $i == null then null else
+        (.[($i + 2):] | explode) as $c
+        | if ($c[0] // 0) == 60 then null else
+            ([range(0; $c | length) | select($c[.] != 45 and $c[.] != 32 and $c[.] != 9)] | first) as $a
+            | if $a == null then null else
+                $c[$a:] as $r
+                | ([range(0; $r | length) | select($r[.] == 32 or $r[.] == 9 or $r[.] == 59 or $r[.] == 124
+                     or $r[.] == 38 or $r[.] == 41 or $r[.] == 62 or $r[.] == 60)] | first) as $e
+                | ($r[0:($e // ($r | length))] | map(select(. != 34 and . != 39 and . != 92)) | implode)
+                | if . == "" then null else . end
+              end
+          end
+      end;
   if type != "string" then {key: "", timeout: false, publish: ""} else
     split("\n") as $lines
     | ($lines[0] // "") as $first
-    | if ($lines[1:] | any(.[]; blank | not)) and ($first | contains("<<") | not) then {key: "", timeout: false, publish: ""}
-      else
-        $first | unquote | split("\t") | join(" ")
-        | [splitall(["&&", "||", ";"])[] | select(words | length > 0) | piece]
-        | {key: (if any(.[]; .k == "c") then ""
-                 else map(select(.k == "r")) | if length == 1 then .[0].key else "" end end),
-           timeout: any(.[]; .t),
-           publish: ((map(.p | select(. != "")) | last) // "")}
-      end
+    | ($first | heredoc_end) as $end
+    | $lines[1:] as $rest
+    # The lines nobody looked at: all of them, or those past a heredoc body.
+    | (if $end == null then $rest
+       else ([range(0; $rest | length) | select(($rest[.] | detab) == $end)] | first) as $t
+         | if $t == null then [] else $rest[($t + 1):] end
+       end) as $after
+    # A line that only closes what the first line opened, the )" under a
+    # heredoc inside $( ), is no command.
+    | ($after | any(.[]; closer | not)) as $more
+    | $first | unquote | split("\t") | join(" ")
+    | [splitall(["&&", "||", ";"])[] | select(words | length > 0) | piece]
+    # With commands nobody looked at, the time belongs to no one command; what
+    # the first line published it still published.
+    | {key: (if $more or any(.[]; .k == "c") then ""
+             else map(select(.k == "r")) | if length == 1 then .[0].key else "" end end),
+       timeout: (($more | not) and any(.[]; .t)),
+       publish: ((map(.p | select(. != "")) | last) // "")}
   end;
 def ct_cmdkey: ct_cmdparse | .key;
 # The time limit of a Bash call, in ms, from its tool_input: the timeout it

@@ -3,7 +3,7 @@
 // records. What a drawing reads is in $.state, so a hot reload keeps it.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
-import type { LiveCall, PaneData, PaneTab, PaneView } from '../../types'
+import type { LiveCall, PaneData, PaneSetting, PaneTab, PaneView } from '../../types'
 import { readBashState, readCommandsFile } from './bash-state.ts'
 import type { BashState, Host } from './bash-state.ts'
 import { cmdKey } from './cmdkey.ts'
@@ -27,7 +27,7 @@ export const sessionStartedAt = atom(
 // The /timestamps pane: null until the person first opens it, so a session
 // that never does reads nothing for it.
 export const pane = atom({ plugin: 'timestamps', key: 'pane' } as const, null as PaneData | null)
-export const paneView = atom({ plugin: 'timestamps', key: 'paneView' } as const, { tab: 'overview', marker: 0, isByTime: false } as PaneView)
+export const paneView = atom({ plugin: 'timestamps', key: 'paneView' } as const, { tab: 'overview', marker: 0, isByTime: false, editing: null, note: null } as PaneView)
 
 const PANE = 'timestamps'
 const PANE_TITLE = 'Timestamps'
@@ -168,6 +168,40 @@ async function openPane($: EngineInterface): Promise<boolean> {
 // marked row opens. Lost on a reload and set again by the next drawing.
 let drawn: { count: number; open?: Target } = { count: 0 }
 
+// The setting the marker stands on, on the Settings tab.
+async function markedSetting($: EngineInterface): Promise<PaneSetting | undefined> {
+  const data = await read($, pane)
+  const view = await read($, paneView)
+  if (data === null || view.tab !== 'settings' || data.settings.length === 0) return undefined
+  return data.settings[Math.min(view.marker, data.settings.length - 1)]
+}
+
+// Change one setting, through the plugin's own setup.sh: it validates the
+// value with the code the hooks read it with, and --only changes that one
+// line of the person's config and no other. What it came to, or why it was
+// refused, is kept for the tab to show.
+async function writeSetting($: EngineInterface, setting: PaneSetting, value: string): Promise<void> {
+  const said = value === '' ? (setting.empty ?? '') : value
+  let note: string
+  if (said === '') note = `${setting.key} needs a value.`
+  else {
+    try {
+      const ran = await $.process.run(['bash', `${$.plugin.root}/hooks/scripts/setup.sh`, '--only', `--${setting.flag}=${said}`], { timeoutMs: 10_000 })
+      if (ran.exitCode === 0) {
+        note = `${setting.key} is now ${said}. It applies from the next message.`
+        if (setting.isPinned) note += ' A project config sets it too, and wins here.'
+      } else {
+        const why = `${ran.stderr ?? ''}\n${ran.stdout}`.split('\n').find(l => l.trim() !== '')
+        note = why ?? `${setting.key} was not changed.`
+      }
+    } catch (err) {
+      note = `${setting.key} was not changed: ${String(err)}`
+    }
+  }
+  await update($, paneView, v => ({ ...v, editing: null, note }))
+  await loadPane($)
+}
+
 // A press, by the id of what was pressed: a tab, a key of the bar, reload.
 async function pressed($: EngineInterface, id: string): Promise<void> {
   if (id === 'reload') {
@@ -176,7 +210,7 @@ async function pressed($: EngineInterface, id: string): Promise<void> {
   }
   if (id.startsWith('tab-') || id.startsWith('key-')) {
     const tab = TABS.find(t => t.id === id.slice(4))?.id
-    if (tab !== undefined) await update($, paneView, v => ({ ...v, tab, marker: 0 }))
+    if (tab !== undefined) await update($, paneView, v => ({ ...v, tab, marker: 0, editing: null, note: null }))
     return
   }
   if (id === 'order') {
@@ -185,7 +219,19 @@ async function pressed($: EngineInterface, id: string): Promise<void> {
   }
   if (id === 'down' || id === 'up') {
     const last = Math.max(0, drawn.count - 1)
-    await update($, paneView, v => ({ ...v, marker: Math.max(0, Math.min(last, Math.min(v.marker, last) + (id === 'down' ? 1 : -1))) }))
+    await update($, paneView, v => ({ ...v, editing: null, marker: Math.max(0, Math.min(last, Math.min(v.marker, last) + (id === 'down' ? 1 : -1))) }))
+    return
+  }
+  if (id === 'change' || id === 'type' || id === 'default') {
+    const setting = await markedSetting($)
+    if (setting === undefined) return
+    if (id === 'default') return writeSetting($, setting, setting.def)
+    // A value from a list moves to the next one; a value with no list is typed.
+    if (id === 'change' && setting.values.length > 0) {
+      const next = setting.values[(setting.values.indexOf(setting.value) + 1) % setting.values.length] ?? ''
+      return writeSetting($, setting, next)
+    }
+    await update($, paneView, v => ({ ...v, editing: v.editing === setting.key ? null : setting.key }))
     return
   }
   if (id === 'open' && drawn.open !== undefined) {
@@ -298,7 +344,10 @@ export function registerLive(on: On): void {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Button, Text } = ui
+    // Every surface but mobile has a text field; there a value is changed from its list or by hand.
+    const Input = 'Input' in ui ? ui.Input : undefined
     const data = await read($, pane)
     const view = await read($, paneView)
     const columns = Math.max(1, e.props.bodyColumns)
@@ -314,6 +363,24 @@ export function registerLive(on: On): void {
     // A press is a Button; one drawn out of sight is there for its hotkey
     // alone. Everything else is text, cut at the row's edge.
     const piece = (s: Segment, i: number) => {
+      const field = s.field
+      if (field !== undefined && Input !== undefined) {
+        return (
+          <Box key={`field-${field.id}`} width={Math.max(1, [...s.text].length)} flexShrink={0}>
+            <Input
+              key={field.id}
+              value={field.value}
+              placeholder={field.placeholder}
+              submitLabel="set"
+              autoFocus
+              onSubmit={async (value: string) => {
+                const setting = await markedSetting($)
+                if (setting !== undefined) await writeSetting($, setting, value.trim())
+              }}
+            />
+          </Box>
+        )
+      }
       const press = s.press
       if (press !== undefined && s.hidden === true) {
         return (

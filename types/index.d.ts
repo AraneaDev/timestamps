@@ -41,6 +41,23 @@ export type PaneNote = { at: number; kind: string; text: string }
 /** A finished session from the history file. */
 export type PaneSession = { when: string; secs: number; turns: number; waited: number; idle: number; project: string | null }
 
+/** One setting, as the Settings tab shows and changes it. */
+export type PaneSetting = {
+  key: string
+  /** the setup.sh flag that changes it, without its dashes */
+  flag: string
+  value: string
+  def: string
+  /** what it accepts, where that is a list; empty for a value to type */
+  values: string[]
+  describes: string
+  kind: 'toggle' | 'choice' | 'text'
+  /** the word that sets it empty on the command line (`local`, `inherit`); null when it cannot be empty */
+  empty: string | null
+  /** a project config sets it, and wins over the person's own here */
+  isPinned: boolean
+}
+
 /** Everything the pane draws, as `setup.sh --pane` reported it (hooks/mod/pane-data.ts). */
 export type PaneData = {
   /** epoch seconds the report was made */
@@ -60,12 +77,22 @@ export type PaneData = {
   history: PaneSession[]
   /** the zone clock times are shown in; null for the machine's own */
   tz: string | null
+  settings: PaneSetting[]
+  /** the person's config file, and the project config layered on it, if any */
+  configFile: string | null
+  projectConfig: string | null
+  /** what setup.sh --doctor prints, line by line */
+  doctor: string[]
 }
 
-export type PaneTab = 'overview' | 'turns' | 'commands' | 'checks' | 'told' | 'history'
+export type PaneTab = 'overview' | 'turns' | 'commands' | 'checks' | 'told' | 'history' | 'settings' | 'doctor'
 
-/** Where the person is in the pane: the open tab, the marked row in it, and the order of its list. */
-export type PaneView = { tab: PaneTab; marker: number; isByTime: boolean }
+/**
+ * Where the person is in the pane: the open tab, the marked row in it, the
+ * order of its list, the setting whose value is being typed, and what the
+ * last change to a setting came to.
+ */
+export type PaneView = { tab: PaneTab; marker: number; isByTime: boolean; editing: string | null; note: string | null }
 
 declare module 'claude-code' {
   interface PluginState {

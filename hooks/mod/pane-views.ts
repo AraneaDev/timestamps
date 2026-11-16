@@ -3,7 +3,7 @@
 // the room there is into rows, and live.tsx draws them. Every section stands
 // on a blank row and a rule, with a cell of margin either side, so the pane
 // reads as a page rather than a dump.
-import type { PaneCall, PaneCheck, PaneCommand, PaneData, PaneTab, PaneTurn, PaneView } from '../../types'
+import type { PaneCall, PaneCheck, PaneCommand, PaneData, PaneSetting, PaneTab, PaneTurn, PaneView } from '../../types'
 import { formatDuration } from './format.ts'
 import { callName, callsByTurn, checkState, composition, days, overUsual, OVER_USUAL, usualOf, workingSeconds } from './pane-data.ts'
 import type { Share } from './pane-data.ts'
@@ -18,6 +18,8 @@ export const TABS: { id: PaneTab; full: string; hotkey: string }[] = [
   { id: 'checks', full: 'Checks', hotkey: '4' },
   { id: 'told', full: 'Told Claude', hotkey: '5' },
   { id: 'history', full: 'History', hotkey: '6' },
+  { id: 'settings', full: 'Settings', hotkey: '7' },
+  { id: 'doctor', full: 'Doctor', hotkey: '8' },
 ]
 
 // Claude Code theme keys, so the pane follows whichever theme is on.
@@ -89,18 +91,30 @@ function titleRow(data: PaneData | null, columns: number): Row {
   return spread('title', [name], [hotkey('reload', 'reload', 'r')], columns)
 }
 
+// A tab's name where the full one does not fit: its first word.
+const shortName = (full: string) => full.split(' ')[0] ?? full
+
 function tabRow(view: PaneView, columns: number): Row {
-  const names = (short: boolean): Segment[] =>
+  // gap: the cells between two tabs; pad: the cells either side of a name.
+  const names = (label: (tab: (typeof TABS)[number]) => string, gap: number, pad: number): Segment[] =>
     TABS.flatMap((tab, i): Segment[] => {
-      const label = short ? tab.hotkey : tab.full
-      const gap: Segment[] = i === 0 ? [] : [{ text: short ? ' ' : '  ' }]
-      if (tab.id === view.tab) return [...gap, { text: ` ${label} `, bg: SELECTED_BG, bold: true }]
-      return [...gap, { text: ' ' }, button(`tab-${tab.id}`, label), { text: ' ' }]
+      const between: Segment[] = i === 0 || gap === 0 ? [] : [{ text: ' '.repeat(gap) }]
+      const side = ' '.repeat(pad)
+      if (tab.id === view.tab) return [...between, { text: `${side}${label(tab)}${side}`, bg: SELECTED_BG, bold: true }]
+      return [...between, ...(pad > 0 ? [{ text: side }] : []), button(`tab-${tab.id}`, label(tab)), ...(pad > 0 ? [{ text: side }] : [])]
     })
   // The digits are always there, drawn or not: a tab is one key away at any width.
   const keys = TABS.map(tab => hotkey(`key-${tab.id}`, tab.full, tab.hotkey))
-  const full = names(false)
-  return { key: 'tabs', segments: [...(width(full) <= columns ? full : clip(names(true), columns)), ...keys] }
+  // The names as long as they fit, closing up before they are cut short; the digits alone last.
+  const variants: Segment[][] = [
+    names(t => t.full, 2, 1),
+    names(t => t.full, 1, 1),
+    names(t => t.full, 0, 1),
+    names(t => shortName(t.full), 0, 1),
+    names(t => t.hotkey, 1, 1),
+  ]
+  const fits = variants.find(v => width(v) <= columns) ?? clip(variants[variants.length - 1] ?? [], columns)
+  return { key: 'tabs', segments: [...fits, ...keys] }
 }
 
 function keysRow(view: PaneView, open: Target | undefined, columns: number, above = 0, below = 0): Row {
@@ -113,7 +127,8 @@ function keysRow(view: PaneView, open: Target | undefined, columns: number, abov
   if (open !== undefined) right.push(button('open', 'open turn', 'o'), { text: '   ' })
   if (view.tab === 'turns') right.push(button('order', view.isByTime ? 'as they happened' : 'longest first', 's'), { text: '   ' })
   if (view.tab === 'commands') right.push(button('order', view.isByTime ? 'slowest first' : 'most time this session', 's'), { text: '   ' })
-  right.push({ text: '1-6: tabs', dim: true })
+  if (view.tab === 'settings') right.push(button('change', 'change', 'e'), { text: '   ' }, button('type', 'type a value', 't'), { text: '   ' }, button('default', 'default', 'd'), { text: '   ' })
+  right.push({ text: '1-8: tabs', dim: true })
   if (width(left) + 2 + width(right) <= columns) return spread('keys', left, right, columns)
   // Too narrow for the words: the keys stay, out of sight.
   const hidden = right.filter(s => s.press !== undefined).map(s => hotkey(s.press!.id, s.press!.label, s.press!.hotkey ?? ''))
@@ -705,6 +720,95 @@ function history(data: PaneData, view: PaneView, w: number, room: number): Body 
   return { rows, targets: all.map(() => null) }
 }
 
+// -------------------------------------------------------------- settings --
+
+/** A setting's value as the list shows it: an empty one by the word that means it. */
+function shownValue(setting: PaneSetting): Segment {
+  if (setting.value === '') return { text: setting.empty ?? 'empty', dim: true }
+  if (setting.kind === 'toggle') {
+    const isOn = setting.value === 'on' || setting.value === 'true'
+    return isOn ? { text: setting.value, color: OK, bold: true } : { text: setting.value, dim: true }
+  }
+  return { text: setting.value, color: ACCENT }
+}
+
+function settingDetail(data: PaneData, setting: PaneSetting, w: number): Row[] {
+  const rows: Row[] = [rule('detail', '◆', setting.key, '', w, ACCENT), blank('gap-detail')]
+  wrap(setting.describes === '' ? 'No description.' : `${setting.describes[0]?.toUpperCase() ?? ''}${setting.describes.slice(1)}.`, Math.max(10, w - 2)).forEach((line, i) =>
+    rows.push({ key: `setting-says-${i}`, segments: [{ text: ` ${line}` }] }),
+  )
+  rows.push(blank('gap-setting'))
+  const fact = (key: string, label: string, value: string, color?: string) =>
+    wrap(value, Math.max(8, w - 12)).forEach((line, i) =>
+      rows.push({ key: `${key}-${i}`, segments: clip([{ text: ` ${padEnd(i === 0 ? label : '', 10)}`, dim: true }, { text: line, color }], w) }),
+    )
+  if (setting.values.length > 0) fact('setting-accepts', 'accepts', setting.values.map(v => (v === '' ? (setting.empty ?? 'empty') : v)).join(', '))
+  else fact('setting-accepts', 'accepts', setting.empty === null ? 'a value you type' : `a value you type, or ${setting.empty}`)
+  fact('setting-default', 'default', setting.def === '' ? (setting.empty ?? 'empty') : setting.def)
+  fact('setting-flag', 'by hand', `setup.sh --only --${setting.flag}=VALUE`)
+  if (setting.isPinned) {
+    rows.push(blank('gap-setting-pinned'))
+    wrap(`⚑ ${data.projectConfig ?? 'A project config'} sets this, and a project's config wins: a change to your own does nothing in this project.`, Math.max(10, w - 2)).forEach((line, i) =>
+      rows.push({ key: `setting-pinned-${i}`, segments: [{ text: ` ${line}`, color: WARN }] }),
+    )
+  }
+  return rows
+}
+
+function settings(data: PaneData, view: PaneView, w: number, room: number): Body {
+  const all = data.settings
+  if (all.length === 0) {
+    return { rows: [rule('settings', '◇', 'Settings', '', w), blank('gap-settings'), dimText('settings-none', ' The settings could not be read.')], targets: [] }
+  }
+  const isWide = w >= 100
+  const listW = isWide ? Math.min(56, Math.floor(w * 0.5)) : w
+  const marker = Math.min(view.marker, all.length - 1)
+  const list: Row[] = [rule('settings', '◇', 'Settings', fit(data.configFile ?? '', Math.max(0, listW - 20)), listW)]
+  // What the last change came to, where the eye already is.
+  if (view.note !== null) wrap(view.note, Math.max(10, listW - 2)).forEach((line, i) => list.push({ key: `settings-note-${i}`, segments: [{ text: ` ${line}`, color: ACCENT }] }))
+  list.push(blank('gap-settings'))
+  // Stacked, the detail under the list is about a dozen rows; the list has the rest.
+  const listRoom = Math.max(3, (isWide ? room : Math.max(Math.floor(room / 2), room - 12)) - list.length - 2)
+  const win = windowOf(all.length, marker, listRoom)
+  if (win.start > 0) list.push(more('settings-above', win.start, '↑'))
+  all.slice(win.start, win.start + win.shown).forEach((setting, i) => {
+    const isMarked = win.start + i === marker
+    const state: Segment[] = []
+    if (setting.isPinned) state.push({ text: ' ⚑ project', color: WARN })
+    else if (setting.value !== setting.def) state.push({ text: ' changed', dim: true })
+    const valueW = Math.max(8, listW - 2 - 17 - 11)
+    // The marked setting being typed shows a field where its value stands.
+    const value: Segment =
+      isMarked && view.editing === setting.key
+        ? { text: ' '.repeat(valueW), field: { id: 'value', value: setting.value, placeholder: setting.empty ?? 'value' } }
+        : { ...shownValue(setting), text: padEnd(fit(shownValue(setting).text, valueW), valueW) }
+    list.push({ key: `setting-${setting.key}`, segments: marked(isMarked, [{ text: padEnd(setting.key, 17) }, value, ...state], listW) })
+  })
+  const below = all.length - win.start - win.shown
+  if (below > 0) list.push(more('settings-below', below, '↓'))
+  const chosen = all[marker]
+  const detail = chosen === undefined ? [] : settingDetail(data, chosen, isWide ? w - listW - 3 : w)
+  return { rows: split(list, detail, listW, isWide), targets: all.map(() => null) }
+}
+
+// ---------------------------------------------------------------- doctor --
+
+function doctor(data: PaneData, w: number): Body {
+  const shown = data.doctor.filter((line, i) => !(i === 0 && /doctor$/i.test(line.trim())))
+  const verdict = [...shown].reverse().find(l => l.trim() !== '') ?? ''
+  const isClean = verdict === 'No problems found.'
+  const rows: Row[] = [rule('doctor', '◉', 'Doctor', isClean ? 'no problems found' : '', w, isClean ? OK : WARN)]
+  if (shown.length === 0) rows.push(blank('gap-doctor'), dimText('doctor-none', ' The doctor did not report.'))
+  shown.forEach((line, i) => {
+    if (line.trim() === '') rows.push(blank(`gap-doctor-${i}`))
+    else if (line === verdict) rows.push({ key: `doctor-${i}`, segments: clip([{ text: ` ${line}`, color: isClean ? OK : WARN, bold: true }], w) })
+    else if (!line.startsWith(' ')) rows.push({ key: `doctor-${i}`, segments: clip([{ text: ` ${line}`, bold: true }], w) })
+    // A finding: its label dim, what was found plain, as the doctor lays it out.
+    else rows.push({ key: `doctor-${i}`, segments: clip([{ text: ` ${line.slice(0, 18)}`, dim: true }, { text: line.slice(18) }], w) })
+  })
+  return { rows, targets: [] }
+}
+
 // ------------------------------------------------------------------ pane --
 
 function bodyOf(data: PaneData, view: PaneView, w: number, room: number, clock: Clock, isCompact: boolean): Body {
@@ -721,6 +825,10 @@ function bodyOf(data: PaneData, view: PaneView, w: number, room: number, clock: 
       return told(data, view, w, room, clock)
     case 'history':
       return history(data, view, w, room)
+    case 'settings':
+      return settings(data, view, w, room)
+    case 'doctor':
+      return doctor(data, w)
   }
 }
 
