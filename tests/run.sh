@@ -7884,7 +7884,8 @@ if command -v jq >/dev/null 2>&1; then
   is "pane report: a value to type, with the word that empties it" "text  local" "$(pn_q '.config[] | select(.key == "TZ") | "\(.kind) \(.value) \(.empty)"')"
   is "pane report: a number is typed too" "text 60 null" "$(pn_q '.config[] | select(.key == "SLOW_AFTER") | "\(.kind) \(.value) \(.empty)"')"
   contains "pane report: what a setting does" "master switch" "$(pn_q '.config[0].describes')"
-  is "pane report: where the settings are kept" "$(ct_tilde "$CLAUDE_TIMESTAMP_CONFIG")" "$(pn_q '.config_file')"
+  # Windows reports the same file in its own spelling (C:/Users/.../Temp/...).
+  is "pane report: where the settings are kept" "${CLAUDE_TIMESTAMP_CONFIG##*/}" "$(pn_q '.config_file | split("/") | last')"
   is "pane report: no project config here" "null" "$(pn_q '.project_config')"
   contains "pane report: the doctor's findings, line by line" "Timestamps doctor" "$(pn_q '.doctor[0]')"
   is "pane report: the doctor's lines carry no colour codes" "0" "$(pn_q '.doctor | join("\n")' | grep -c "$(printf '\033')")"
